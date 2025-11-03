@@ -94,7 +94,6 @@ class Engine:
 
             match action:
                 case Release(animal=a):
-                    print(f"{helper.id}: relasing {a}")
                     helper_x, helper_y = tuple(map(int, helper.position))
                     cell = self.grid[helper_y][helper_x]
 
@@ -105,8 +104,6 @@ class Engine:
                     self.free_animals[a] = cell
 
                 case Obtain(animal=a):
-                    print(f"{helper.id}: obtaining {a}")
-
                     helper_x, helper_y = tuple(map(int, helper.position))
                     helper_cell = self.grid[helper_y][helper_x]
 
@@ -125,8 +122,6 @@ class Engine:
                     helper.flock.add(a)
 
                 case Move(x=x, y=y):
-                    print(f"{helper.id}: moving to {(x, y)}")
-
                     if not helper.can_move_to(x, y):
                         raise Exception(
                             f"player cannot move from {helper.position} to {(x, y)}"
@@ -138,8 +133,6 @@ class Engine:
         for animal, cell in self.free_animals.items():
             if random() < c.ANIMAL_MOVE_PROBABILITY:
                 neighbor = choice(cell.get_emptiest_neighbors())
-
-                print(f"{animal} moved: {cell.x, cell.y} -> {neighbor.x, neighbor.y}")
 
                 cell.animals.remove(animal)
                 neighbor.animals.add(animal)

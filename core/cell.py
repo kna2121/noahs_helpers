@@ -32,8 +32,6 @@ class Cell:
             if dir is not None
         ]
 
-        print(f"cell {self.x, self.y} has {len(dirs)} non-empty cells")
-
         min_animals = min([len(dir.animals) for dir in dirs])
 
         return [dir for dir in dirs if len(dir.animals) == min_animals]

@@ -1,8 +1,10 @@
 import pygame
 
-from core.animal import Gender
+from core.animal import Animal, Gender
+from core.ark import Ark
 from core.engine import Engine
 import core.constants as c
+from core.player import Player
 
 
 def coords_to_px(x: float, y: float) -> tuple[float, float]:
@@ -11,6 +13,18 @@ def coords_to_px(x: float, y: float) -> tuple[float, float]:
         c.LANDSCAPE_NORTH_PX + (c.LANDSCAPE_SOUTH_PX - c.LANDSCAPE_NORTH_PX) * y / c.Y
     )
     return x_px, y_px
+
+
+def km_to_px(km: float) -> float:
+    return c.LANDSCAPE_HEIGHT * km / c.Y
+
+
+def is_hovered_circle(
+    mouse_pos: tuple[int, int], center: tuple[float, float], radius: float
+) -> bool:
+    mx, my = mouse_pos
+    cx, cy = center
+    return (mx - cx) ** 2 + (my - cy) ** 2 <= radius**2
 
 
 class ArkUI:
@@ -28,6 +42,12 @@ class ArkUI:
         self.bg_color = c.BG_COLOR
         self.big_font = pygame.font.Font(None, 32)
         self.small_font = pygame.font.Font(None, 20)
+
+        self.debug_mode = False
+
+        self.drawn_objects: dict[
+            tuple[tuple[float, float], float], Ark | Player | Animal
+        ] = {}
 
     def write_at(self, line: str, coord: tuple[float, float]):
         text = self.small_font.render(line, True, (0, 0, 0))
@@ -78,36 +98,80 @@ class ArkUI:
 
     def draw_ark(self):
         ark_x, ark_y = self.engine.ark.position
-        ark_x_px, ark_y_px = coords_to_px(ark_x, ark_y)
+        ark_center = coords_to_px(ark_x, ark_y)
 
-        pygame.draw.circle(self.screen, c.ARK_COLOR, (ark_x_px, ark_y_px), c.ARK_RADIUS)
+        pygame.draw.circle(self.screen, c.ARK_COLOR, ark_center, c.ARK_RADIUS)
+
+        key = (ark_center, c.ARK_RADIUS)
+        self.drawn_objects[key] = self.engine.ark
+
+    def draw_hovered_ark(self):
+        cw = c.SCREEN_WIDTH / 2
+        ch = c.SCREEN_HEIGHT / 2
+
+        rect = pygame.Rect(
+            cw - c.HOVERED_WIDTH / 2,
+            ch - c.HOVERED_HEIGHT / 2,
+            c.HOVERED_WIDTH,
+            c.HOVERED_HEIGHT,
+        )
+
+        pygame.draw.rect(self.screen, c.BG_COLOR, rect)
+        self.write_at("ARK", (cw - 10, ch - c.HOVERED_HEIGHT / 2 + 10))
 
     def draw_helpers(self):
         for helper in self.engine.helpers:
             helper_x, helper_y = helper.position
-            helper_x_px, helper_y_px = coords_to_px(helper_x, helper_y)
+            helper_center = coords_to_px(helper_x, helper_y)
 
             pygame.draw.circle(
-                self.screen, c.HELPER_COLOR, (helper_x_px, helper_y_px), c.HELPER_RADIUS
+                self.screen, c.HELPER_COLOR, helper_center, c.HELPER_RADIUS
             )
+            self.drawn_objects[(helper_center, c.HELPER_RADIUS)] = helper
 
     def draw_animals(self):
         for animal, cell in self.engine.free_animals.items():
-            a_x_px, a_y_px = coords_to_px(cell.x, cell.y)
+            animal_center = coords_to_px(cell.x, cell.y)
 
             color = (
                 c.MALE_ANIMAL_COLOR
-                if animal.gender == Gender.Female
+                if animal.gender == Gender.Male
                 else c.FEMALE_ANIMAL_COLOR
             )
 
-            animal_rect = pygame.Rect(a_x_px, a_y_px, c.ANIMAL_RADIUS, c.ANIMAL_RADIUS)
+            animal_rect = pygame.Rect(
+                animal_center[0] - c.ANIMAL_RADIUS / 2,
+                animal_center[1] - c.ANIMAL_RADIUS / 2,
+                c.ANIMAL_RADIUS,
+                c.ANIMAL_RADIUS,
+            )
             pygame.draw.rect(self.screen, color, animal_rect, c.ANIMAL_RADIUS)
 
+            self.drawn_objects[(animal_center, c.ANIMAL_RADIUS)] = animal
+
+    def draw_if_hovered(self):
+        pos = pygame.mouse.get_pos()
+
+        for (center, radius), object in self.drawn_objects.items():
+            if is_hovered_circle(pos, center, radius):
+
+                match object:
+                    case Ark(position=p, animals=a):
+                        print(f"hovering ARK, pos={p}, animals={a}")
+                        self.draw_hovered_ark()
+                    case Player(id=id, position=p, flock=f):
+                        print(f"hovering PLAYER, id={id}, pos={p}, flock={f}")
+                    case Animal(species_id=s, gender=g):
+                        print(f"hovering ANIMAL, species_id={s}, gender={g}")
+                break
+
     def draw_objects(self):
+        self.drawn_objects.clear()
         self.draw_ark()
         self.draw_helpers()
         self.draw_animals()
+
+        self.draw_if_hovered()
 
     def draw_info_panel(self):
         info_pane_x = c.LANDSCAPE_EAST_PX + c.MARGIN_X
@@ -122,7 +186,7 @@ class ArkUI:
             f"is_raining: {self.engine.is_raining()}",
             # "",
             # f"{'PAUSED' if self.paused else 'RUNNING'}",
-            # f"{'DEBUG ON' if self.debug_mode else 'DEBUG OFF'}",  # NEW: Show debug status
+            f"{'DEBUG ON' if self.debug_mode else 'DEBUG OFF'}",  # NEW: Show debug status
         ]
 
         for i, line in enumerate(info_lines):
@@ -130,6 +194,36 @@ class ArkUI:
             if line:  # Skip empty debug line when not in debug mode
                 text = self.big_font.render(line, True, (0, 0, 0))
                 self.screen.blit(text, (info_pane_x, y))
+
+    def draw_debug_helper_screens(self):
+        grid = pygame.Rect(
+            c.MARGIN_X, c.MARGIN_Y, c.LANDSCAPE_WIDTH, c.LANDSCAPE_HEIGHT
+        )
+
+        mask = pygame.Surface((grid.w, grid.h), pygame.SRCALPHA)
+        mask.fill((0, 0, 0, 50))
+
+        for helper in self.engine.helpers:
+            grid_center = coords_to_px(*helper.position)
+            center = grid_center[0] - grid.x, grid_center[1] - grid.y
+            radius = km_to_px(c.MAX_SIGHT_KM)
+
+            pygame.draw.circle(mask, (0, 0, 0, 0), center, radius)
+
+        for helper in self.engine.helpers:
+            grid_center = coords_to_px(*helper.position)
+            center = grid_center[0] - grid.x, grid_center[1] - grid.y
+            radius = km_to_px(c.MAX_SIGHT_KM)
+
+            pygame.draw.circle(mask, (0, 0, 0, 255), center, radius, width=1)
+
+        self.screen.blit(mask, grid.topleft)
+
+    def draw_debug_info(self):
+        if not self.debug_mode:
+            return
+
+        self.draw_debug_helper_screens()
 
     def step_simulation(self):
         """Run one turn of simulation."""
@@ -148,33 +242,28 @@ class ArkUI:
                 self.running = False
 
             elif event.type == pygame.KEYDOWN:
-                # print(f"event {event.key}")
                 if event.key == pygame.K_SPACE:
-                    print("pressed space")
                     self.paused = not self.paused
                 elif event.key == pygame.K_RIGHT and self.paused:
-                    print("pressed right")
                     self.step_simulation()
                 elif event.key == pygame.K_d:  # NEW: Toggle debug mode
-                    print("toggle debug mode")
-                #     self.debug_mode = not self.debug_mode
+                    self.debug_mode = not self.debug_mode
 
     def run(self) -> dict:
         while self.running:
-            self.handle_events()
-
-            if not self.paused:
-                self.step_simulation()
-                # self.clock.tick(40)
-
             self.screen.fill(self.bg_color)
             self.draw_grid()
             self.draw_objects()
             self.draw_info_panel()
-            # self.draw_debug_info()
+            self.draw_debug_info()
+
+            self.handle_events()
+
+            if not self.paused:
+                self.step_simulation()
 
             pygame.display.flip()
-            self.clock.tick(100)
+            self.clock.tick(10)
 
         pygame.quit()
 
