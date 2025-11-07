@@ -4,9 +4,12 @@ from typing import final
 
 from math import hypot
 
+import pygame
+
 from core.action import Action
 from core.animal import Animal
 from core.message import Message
+from core.ui.utils import write_at
 from core.views.player_view import PlayerView
 from core.snapshots import HelperSurroundingsSnapshot
 
@@ -90,6 +93,31 @@ class Player(ABC):
         scale = step_size / dist
 
         return cx + dx * scale, cy + dy * scale
+
+    @final
+    def draw(
+        self, screen: pygame.Surface, font: pygame.font.Font, pos: tuple[int, int]
+    ):
+        text = font.render(f"h{self.id}", True, c.HELPER_COLOR)
+        rect = text.get_rect(center=pos)
+        screen.blit(text, rect)
+
+    @final
+    def draw_flock(
+        self, screen: pygame.Surface, font: pygame.font.Font, start_pos: tuple[int, int]
+    ):
+        x, y = start_pos
+        flist = list(self.flock) + [None] * (c.MAX_FLOCK_SIZE - len(self.flock))
+        for i in range(c.MAX_FLOCK_SIZE):
+            fi = flist[i]
+            pos = (x, y)
+
+            if fi is None:
+                write_at(screen, font, "_", pos)
+            else:
+                fi.draw(screen, font, pos)
+
+            x += 40
 
     @abstractmethod
     def check_surroundings(self, snapshot: HelperSurroundingsSnapshot) -> int:

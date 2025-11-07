@@ -6,6 +6,7 @@ from core.ark import Ark
 from core.engine import Engine
 import core.constants as c
 from core.player import Player
+from core.ui.utils import write_at
 
 
 def coords_to_px(x: float, y: float) -> tuple[int, int]:
@@ -41,39 +42,15 @@ class ArkUI:
 
         self.screen = pygame.display.set_mode((c.SCREEN_WIDTH, c.SCREEN_HEIGHT))
         self.bg_color = c.BG_COLOR
-        self.big_font = pygame.font.SysFont(None, 36)
-        self.small_font = pygame.font.SysFont(None, 28)
+        self.big_font = pygame.font.SysFont(None, 40)
+        self.small_font = pygame.font.SysFont(None, 32)
+        self.tiny_font = pygame.font.SysFont(None, 28)
 
         self.debug_mode = False
 
         self.drawn_objects: dict[
             tuple[tuple[float, float], float], Ark | Player | Animal
         ] = {}
-
-    def write_at(
-        self,
-        font: pygame.font.Font,
-        line: str,
-        coord: tuple[int, int],
-        align: Literal["left", "center", "right"] = "center",
-        color=(0, 0, 0),
-    ):
-        text = font.render(line, True, color)
-
-        # get rectangle to center the text
-        match align:
-            case x if x == "left":
-                rect = text.get_rect()
-                rect.midleft = coord
-            case x if x == "center":
-                rect = text.get_rect(center=coord)
-            case x if x == "right":
-                rect = text.get_rect()
-                rect.midright = coord
-            case _:
-                raise Exception(f"invalid value for `align`: {align}")
-
-        self.screen.blit(text, rect)
 
     def draw_grid(self):
         """Draw garden boundaries and grid."""
@@ -100,7 +77,7 @@ class ArkUI:
             if i:
                 val = c.X * i / c.NUM_GRID_LINES
                 line = f"{int(val)}" if val.is_integer() else f"{val:.1f}"
-            self.write_at(self.small_font, line, (x, c.MARGIN_Y - 20))
+            write_at(self.screen, self.tiny_font, line, (x, c.MARGIN_Y - 20))
 
         for i in range(c.NUM_GRID_LINES + 1):
             y = c.MARGIN_Y + int(c.LANDSCAPE_HEIGHT * i / c.NUM_GRID_LINES)
@@ -117,7 +94,9 @@ class ArkUI:
             if i:
                 val = c.Y * i / c.NUM_GRID_LINES
                 line = f"{int(val)}" if val.is_integer() else f"{val:.1f}"
-            self.write_at(self.small_font, line, (c.MARGIN_X - 10, y), align="right")
+            write_at(
+                self.screen, self.tiny_font, line, (c.MARGIN_X - 10, y), align="right"
+            )
 
     def draw_ark(self):
         ark_x, ark_y = self.engine.ark.position
@@ -154,7 +133,9 @@ class ArkUI:
         self.screen.blit(overlay, rect.topleft)
         pygame.draw.rect(self.screen, (0, 0, 0), rect, width=1, border_radius=10)
 
-        self.write_at(self.big_font, title, (cw, ch - int(c.HOVERED_HEIGHT / 2) + 15))
+        write_at(
+            self.screen, self.big_font, title, (cw, ch - int(c.HOVERED_HEIGHT / 2) + 25)
+        )
 
         return left, top
 
@@ -162,7 +143,8 @@ class ArkUI:
         left, top = self.render_hover_view("ARK")
 
         margined_x = left + c.HOVERED_MARGIN_X
-        self.write_at(
+        write_at(
+            self.screen,
             self.small_font,
             f"pos: {pos}",
             (margined_x, top + c.MARGIN_Y),
@@ -173,7 +155,9 @@ class ArkUI:
 
         y = top + c.MARGIN_Y * 2
         for sid, (has_male, has_female) in species_in_ark.items():
-            self.write_at(self.small_font, f"{sid}: ", (margined_x, y), align="left")
+            write_at(
+                self.screen, self.small_font, f"{sid}: ", (margined_x, y), align="left"
+            )
 
             side = 40
             offset = 40
@@ -199,56 +183,43 @@ class ArkUI:
             helper_x, helper_y = helper.position
             helper_center = coords_to_px(helper_x, helper_y)
 
-            pygame.draw.circle(
-                self.screen, c.HELPER_COLOR, helper_center, c.HELPER_RADIUS
-            )
+            helper.draw(self.screen, self.small_font, helper_center)
             self.drawn_objects[(helper_center, c.HELPER_RADIUS)] = helper
 
-    def draw_hovered_helper(
-        self, id: int, position: tuple[float, float], flock: set[Animal]
-    ):
-        left, top = self.render_hover_view(f"Helper {id}")
+    def draw_hovered_helper(self, helper: Player):
+        left, top = self.render_hover_view(f"Helper {helper.id}")
 
         y = top + c.MARGIN_Y
 
         margined_x = left + c.HOVERED_MARGIN_X
-        self.write_at(
+        write_at(
+            self.screen,
             self.small_font,
-            f"pos: ({position[0]:.2f}, {position[1]:.2f})",
+            f"pos: ({helper.position[0]:.2f}, {helper.position[1]:.2f})",
             (margined_x, y),
             align="left",
         )
 
         y += c.MARGIN_Y
 
-        self.write_at(
+        write_at(
+            self.screen,
             self.small_font,
             "Flock",
             (margined_x, y),
             align="left",
         )
 
-        flist = list(flock) + [None] * (c.MAX_FLOCK_SIZE - len(flock))
         y += 30
-        x = margined_x + 20
-        for i in range(c.MAX_FLOCK_SIZE):
-            fi = flist[i]
-            pos = (x, y)
-
-            if fi is None:
-                self.write_at(self.small_font, "None", pos)
-            else:
-                fi.draw(self.screen, self.small_font, pos)
-
-            x += 60
-
+        helper.draw_flock(self.screen, self.big_font, (margined_x + 20, y))
         y += c.MARGIN_Y
 
-        last_msg = self.engine.last_messages[id]
+        last_msg = self.engine.last_messages[helper.id]
         if last_msg is not None:
-            self.write_at(
+            write_at(
+                self.screen,
                 self.small_font,
-                f"Last msg: 0b{last_msg:08b} = {last_msg}",
+                f"Last msg: 0b{last_msg:08b}={last_msg}",
                 (margined_x, y),
                 align="left",
             )
@@ -266,7 +237,8 @@ class ArkUI:
         y = top + c.MARGIN_Y
 
         margined_x = left + c.HOVERED_MARGIN_X
-        self.write_at(
+        write_at(
+            self.screen,
             self.small_font,
             f"pos: {pos}",
             (margined_x, y),
@@ -275,7 +247,8 @@ class ArkUI:
 
         y += c.MARGIN_Y
 
-        self.write_at(
+        write_at(
+            self.screen,
             self.small_font,
             f"species_id: {sid}",
             (margined_x, y),
@@ -286,7 +259,8 @@ class ArkUI:
 
         color = c.MALE_ANIMAL_COLOR if gender == Gender.Male else c.FEMALE_ANIMAL_COLOR
 
-        self.write_at(
+        write_at(
+            self.screen,
             self.small_font,
             f"{gender}",
             (margined_x, y),
@@ -308,8 +282,8 @@ class ArkUI:
         match best_obj:
             case Ark(position=p):
                 self.draw_hovered_ark(p)
-            case Player(id=id, position=p, flock=f):
-                self.draw_hovered_helper(id, p, f)
+            case Player(id=id, position=p, flock=f) as player:
+                self.draw_hovered_helper(player)
             case Animal(species_id=sid, gender=g):
                 cell = self.engine.free_animals[best_obj]
                 self.draw_hovered_animal(sid, g, (cell.x, cell.y))
@@ -321,7 +295,7 @@ class ArkUI:
         self.draw_animals()
 
     def draw_info_panel(self):
-        info_pane_x = c.LANDSCAPE_EAST_PX + c.MARGIN_X
+        info_pane_x = c.LANDSCAPE_EAST_PX + 30
         info_pane_y = c.MARGIN_Y
 
         info_lines = [
@@ -338,33 +312,53 @@ class ArkUI:
         for i, line in enumerate(info_lines):
             y = info_pane_y + i * 30
             if line:  # Skip empty debug line when not in debug mode
-                self.write_at(self.big_font, line, (info_pane_x, y), align="left")
+                write_at(
+                    self.screen, self.big_font, line, (info_pane_x, y), align="left"
+                )
 
         y += 40
+        base_y = y
 
-        self.write_at(self.big_font, "Animals", (info_pane_x, y), align="left")
+        write_at(self.screen, self.big_font, "Animals", (info_pane_x, y), align="left")
         for sid, (num_male, num_female) in self.engine.species_stats.items():
             y += 30
-            self.write_at(
+            write_at(
+                self.screen,
                 self.big_font,
                 f"{chr(sid + ord('a'))}:",
-                (info_pane_x + 20, y),
+                (info_pane_x, y),
                 align="left",
             )
-            self.write_at(
+            write_at(
+                self.screen,
                 self.big_font,
                 f"{num_male}M",
-                (info_pane_x + 55, y),
+                (info_pane_x + 35, y),
                 align="left",
                 color=c.MALE_ANIMAL_COLOR,
             )
-            self.write_at(
+            write_at(
+                self.screen,
                 self.big_font,
                 f"{num_female}F",
-                (info_pane_x + 110, y),
+                (info_pane_x + 90, y),
                 align="left",
                 color=c.FEMALE_ANIMAL_COLOR,
             )
+
+        y = base_y
+        x = info_pane_x + 160
+        write_at(self.screen, self.big_font, f"Helpers", (x, y), align="left")
+        for helper in self.engine.helpers:
+            y += 30
+            write_at(
+                self.screen,
+                self.big_font,
+                f"H{helper.id}: ",
+                (x, y),
+                align="left",
+            )
+            helper.draw_flock(self.screen, self.big_font, (x + 60, y))
 
     def draw_debug_helper_screens(self):
         grid = pygame.Rect(
