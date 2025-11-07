@@ -4,6 +4,7 @@ from core.action import Action, Move, Obtain
 from core.message import Message
 from core.player import Player
 from core.snapshots import HelperSurroundingsSnapshot
+from core.views.player_view import Kind
 from core.views.cell_view import CellView
 
 
@@ -12,8 +13,8 @@ def distance(x1: float, y1: float, x2: float, y2: float) -> float:
 
 
 class RandomPlayer(Player):
-    def __init__(self, id: int, ark_x: int, ark_y: int):
-        super().__init__(id, ark_x, ark_y)
+    def __init__(self, id: int, ark_x: int, ark_y: int, kind: Kind):
+        super().__init__(id, ark_x, ark_y, kind)
         print(f"I am {self}")
 
     def check_surroundings(self, snapshot: HelperSurroundingsSnapshot):
@@ -56,9 +57,13 @@ class RandomPlayer(Player):
 
         return old_x + dx, old_y + dy
 
-    def get_action(self, messages: list[Message]) -> Action:
+    def get_action(self, messages: list[Message]) -> Action | None:
         # for msg in messages:
         #     print(f"{self.id}: got {msg.contents} from {msg.from_helper.id}")
+
+        # noah shouldn't do anything
+        if self.kind == Kind.Noah:
+            return None
 
         if not self.is_flock_empty():
             return Move(*self.move_towards(*self.ark_position))

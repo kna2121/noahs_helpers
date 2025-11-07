@@ -10,14 +10,16 @@ from core.action import Action
 from core.animal import Animal
 from core.message import Message
 from core.ui.utils import write_at
-from core.views.player_view import PlayerView
 from core.snapshots import HelperSurroundingsSnapshot
+from core.views.player_view import PlayerView, Kind
 
 import core.constants as c
 
 
 class Player(ABC):
-    def __init__(self, id: int, ark_x: int, ark_y: int):
+    # TODO: Give players view of species populations and number of helpers
+    def __init__(self, id: int, ark_x: int, ark_y: int, kind: Kind):
+        self.kind = kind
         self.id = id
         self.ark_position = (ark_x, ark_y)
         self.position = (float(ark_x), float(ark_y))
@@ -44,7 +46,7 @@ class Player(ABC):
 
     @final
     def get_view(self) -> PlayerView:
-        return PlayerView(self.id)
+        return PlayerView(self.id, self.kind)
 
     @final
     def is_in_ark(self) -> bool:
@@ -59,6 +61,10 @@ class Player(ABC):
 
     @final
     def can_move_to(self, x: float, y: float) -> bool:
+        # noah is stuck on the ark
+        if self.kind == Kind.Noah:
+            return False
+
         if not (0 <= x < c.X and 0 <= y < c.Y):
             return False
 
@@ -95,10 +101,22 @@ class Player(ABC):
         return cx + dx * scale, cy + dy * scale
 
     @final
+    def get_long_name(self) -> str:
+        return (
+            self.kind.name if self.kind == Kind.Noah else f"{self.kind.name} {self.id}"
+        )
+
+    @final
+    def get_short_name(self) -> str:
+        return (
+            self.kind.value if self.kind == Kind.Noah else f"{self.kind.value}{self.id}"
+        )
+
+    @final
     def draw(
         self, screen: pygame.Surface, font: pygame.font.Font, pos: tuple[int, int]
     ):
-        text = font.render(f"h{self.id}", True, c.HELPER_COLOR)
+        text = font.render(self.get_short_name(), True, c.HELPER_COLOR)
         rect = text.get_rect(center=pos)
         screen.blit(text, rect)
 
@@ -106,6 +124,9 @@ class Player(ABC):
     def draw_flock(
         self, screen: pygame.Surface, font: pygame.font.Font, start_pos: tuple[int, int]
     ):
+        if self.kind == Kind.Noah:
+            raise Exception(f"Noah doesn't have a flock")
+
         x, y = start_pos
         flist = list(self.flock) + [None] * (c.MAX_FLOCK_SIZE - len(self.flock))
         for i in range(c.MAX_FLOCK_SIZE):
@@ -124,5 +145,5 @@ class Player(ABC):
         raise Exception("not implemented")
 
     @abstractmethod
-    def get_action(self, messages: list[Message]) -> Action:
+    def get_action(self, messages: list[Message]) -> Action | None:
         raise Exception("not implemented")

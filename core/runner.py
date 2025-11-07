@@ -8,6 +8,7 @@ from core.ui.ark_ui import ArkUI
 from core.cell import Cell
 
 import core.constants as c
+from core.views.player_view import Kind
 
 
 class ArkRunner:
@@ -68,7 +69,8 @@ class ArkRunner:
         self.ark = Ark(self.ark_pos, species_stats)
 
         self.helpers = [
-            self.player_class(id, *self.ark.position) for id in range(self.num_helpers)
+            self.player_class(id, *self.ark.position, Kind.Helper if id else Kind.Noah)
+            for id in range(self.num_helpers)
         ]
 
         engine = Engine(

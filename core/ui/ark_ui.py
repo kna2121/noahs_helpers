@@ -1,12 +1,13 @@
-from typing import Literal
 import pygame
 
 from core.animal import Animal, Gender
 from core.ark import Ark
 from core.engine import Engine
-import core.constants as c
 from core.player import Player
 from core.ui.utils import write_at
+from core.views.player_view import Kind
+
+import core.constants as c
 
 
 def coords_to_px(x: float, y: float) -> tuple[int, int]:
@@ -187,7 +188,7 @@ class ArkUI:
             self.drawn_objects[(helper_center, c.HELPER_RADIUS)] = helper
 
     def draw_hovered_helper(self, helper: Player):
-        left, top = self.render_hover_view(f"Helper {helper.id}")
+        left, top = self.render_hover_view(helper.get_long_name())
 
         y = top + c.MARGIN_Y
 
@@ -200,18 +201,19 @@ class ArkUI:
             align="left",
         )
 
-        y += c.MARGIN_Y
+        # noah doesn't have a flock
+        if helper.kind != Kind.Noah:
+            y += c.MARGIN_Y
+            write_at(
+                self.screen,
+                self.small_font,
+                "Flock",
+                (margined_x, y),
+                align="left",
+            )
+            y += 30
+            helper.draw_flock(self.screen, self.big_font, (margined_x + 20, y))
 
-        write_at(
-            self.screen,
-            self.small_font,
-            "Flock",
-            (margined_x, y),
-            align="left",
-        )
-
-        y += 30
-        helper.draw_flock(self.screen, self.big_font, (margined_x + 20, y))
         y += c.MARGIN_Y
 
         last_msg = self.engine.last_messages[helper.id]
@@ -350,11 +352,13 @@ class ArkUI:
         x = info_pane_x + 160
         write_at(self.screen, self.big_font, f"Helpers", (x, y), align="left")
         for helper in self.engine.helpers:
+            if helper.kind == Kind.Noah:
+                continue
             y += 30
             write_at(
                 self.screen,
                 self.big_font,
-                f"H{helper.id}: ",
+                f"{helper.get_short_name()}: ",
                 (x, y),
                 align="left",
             )

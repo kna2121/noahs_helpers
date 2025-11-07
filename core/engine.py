@@ -8,6 +8,7 @@ from core.player import Player
 from core.cell import Cell
 from core.sight import Sight
 from core.snapshots import HelperSurroundingsSnapshot
+from core.views.player_view import Kind
 
 import core.constants as c
 
@@ -98,6 +99,9 @@ class Engine:
         obtained: dict[Animal, list[Player]] = {}
         for helper in self.helpers:
             action = helper.get_action(messages_to[helper])
+
+            if helper.kind == Kind.Noah and action is not None:
+                raise Exception(f"Noah shouldn't perform an action")
 
             match action:
                 case Release(animal=a):
