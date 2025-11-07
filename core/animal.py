@@ -17,4 +17,7 @@ class Animal:
     gender: Gender
 
     def copy(self, make_unknown: bool) -> Animal:
-        return Animal(self.species_id, Gender.Unknown if make_unknown else self.gender)
+        if not make_unknown:
+            return self
+
+        return Animal(self.species_id, Gender.Unknown)
