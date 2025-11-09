@@ -207,7 +207,7 @@ class ArkUI:
     def draw_ark_on_map(self):
         ark_x, ark_y = self.engine.ark.position
         ark_center = self.map_coords_to_px(ark_x, ark_y)
-        render_img(self.screen, ark_center, "sprites/ark.png", c.ARK_RADIUS)
+        render_img(self.screen, ark_center, "sprites/a.png", c.ARK_RADIUS)
 
     def draw_ark(self):
         ark_x, ark_y = self.engine.ark.position
@@ -215,7 +215,7 @@ class ArkUI:
             return
 
         ark_center = self.coords_to_px(ark_x, ark_y)
-        render_img(self.screen, ark_center, "sprites/ark.png", int(2.5 * c.ARK_RADIUS))
+        render_img(self.screen, ark_center, "sprites/a.png", int(2.5 * c.ARK_RADIUS))
         key = (ark_center, c.ARK_RADIUS)
         self.drawn_objects[key] = self.engine.ark
 
@@ -583,7 +583,7 @@ class ArkUI:
     def draw_raindrop(self):
         x, y = c.SCREEN_WIDTH - c.MARGIN_X, c.MARGIN_Y
         if self.engine.is_raining():
-            render_img(self.screen, (x, y), "sprites/raindrop.png", 60)
+            render_img(self.screen, (x, y), "sprites/rd.png", 60)
 
     def draw_info_panel(self):
         info_pane_x = c.LANDSCAPE_EAST_PX + 30
