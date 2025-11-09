@@ -9,6 +9,7 @@ from core.player import Player
 from core.cell import Cell
 from core.sight import Sight
 from core.snapshots import HelperSurroundingsSnapshot
+from core.timer import Timer
 from core.views.player_view import Kind
 
 import core.constants as c
@@ -52,7 +53,6 @@ class Engine:
         return self.time_elapsed >= self.time - c.START_RAIN
 
     def run_turn(self) -> float:
-        start = perf_counter()
         is_raining = self.is_raining()
         ark_view = self.ark.get_view()
         self.last_messages.clear()
@@ -72,6 +72,9 @@ class Engine:
             helper: [] for helper in self.helpers
         }
 
+        # Tracks the total time consumed by the player
+        timer = Timer()
+
         for helper in self.helpers:
             sight = Sight(helper.position, self.grid)
 
@@ -80,9 +83,17 @@ class Engine:
                 helper_ark_view = ark_view
 
             snapshot = HelperSurroundingsSnapshot(
-                self.time_elapsed, is_raining, helper.position, sight, helper_ark_view
+                self.time_elapsed,
+                is_raining,
+                helper.position,
+                sight,
+                helper_ark_view,
+                timer.copy(),
             )
+            last = perf_counter()
             one_byte_message = helper.check_surroundings(snapshot)
+            timer.consumed += perf_counter() - last
+
             if not (0 <= one_byte_message < c.ONE_BYTE):
                 raise Exception(
                     f"helper {helper.id} gave incorrect message: {one_byte_message}"
@@ -103,7 +114,9 @@ class Engine:
 
         obtained: dict[Animal, list[Player]] = {}
         for helper in self.helpers:
+            last = perf_counter()
             action = helper.get_action(messages_to[helper])
+            timer.consumed += perf_counter() - last
 
             if helper.kind == Kind.Noah and action is not None:
                 raise Exception("Noah shouldn't perform an action")
@@ -177,9 +190,8 @@ class Engine:
                 self.free_animals[animal] = neighbor
 
         self.time_elapsed += 1
-        end = perf_counter()
-        self.times.append(end - start)
-        return end - start
+        self.times.append(timer)
+        return timer.consumed
 
     def get_results(self) -> tuple[int, list[float]]:
         # By the end, all helpers must be in the ark

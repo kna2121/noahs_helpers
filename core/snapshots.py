@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from core.timer import Timer
 from core.views.ark_view import ArkView
 from core.sight import Sight
 
@@ -11,3 +12,4 @@ class HelperSurroundingsSnapshot:
     position: tuple[float, float]
     sight: Sight
     ark_view: ArkView | None
+    timer: Timer
