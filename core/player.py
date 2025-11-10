@@ -60,8 +60,8 @@ class Player(ABC):
     @final
     def is_in_ark(self) -> bool:
         return (
-            int(self.position[0]) == self.ark_position[0]
-            and int(self.position[1]) == self.ark_position[1]
+            abs(self.position[0] - self.ark_position[0]) <= c.EPS
+            and abs(self.position[1] - self.ark_position[1]) <= c.EPS
         )
 
     @final
