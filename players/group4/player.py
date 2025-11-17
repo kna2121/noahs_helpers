@@ -62,6 +62,7 @@ class Player4(Player):
         self.region_bounds = self._compute_region_bounds()
         self.patrol_target: Optional[tuple[float, float]] = None
         self.tracking_cell: Optional[tuple[int, int]] = None
+        self.wander_target: Optional[tuple[float, float]] = None
 
         self.species_priority = self._build_species_priority(species_populations)
         max_pop = (
@@ -473,13 +474,22 @@ class Player4(Player):
         if self.kind == Kind.Noah:
             return self.position
 
-        for _ in range(20):
-            angle = random.uniform(0, math.tau)
-            distance = random.uniform(0.4, c.MAX_DISTANCE_KM * 0.95)
-            dx = math.cos(angle) * distance
-            dy = math.sin(angle) * distance
-            candidate = (self.position[0] + dx, self.position[1] + dy)
-            if self.can_move_to(*candidate):
-                return candidate
+        # Keep a long-lived random waypoint instead of re-sampling every turn.
+        if (
+            self.wander_target is None
+            or _distance(*self.position, *self.wander_target) < 0.4
+            or not self._is_point_safe(*self.wander_target)
+        ):
+            self.wander_target = self._random_point_in_safe_area()
 
+        for _ in range(10):
+            next_pos = self.move_towards(*self.wander_target)
+            if self.can_move_to(*next_pos):
+                # Once we arrive, force a new random destination next time.
+                if _distance(*next_pos, *self.wander_target) < 0.2:
+                    self.wander_target = None
+                return next_pos
+            self.wander_target = self._random_point_in_safe_area()
+
+        # If movement keeps failing, fall back to a single-step random nudge.
         return self.move_towards(*(self._random_point_in_safe_area()))
