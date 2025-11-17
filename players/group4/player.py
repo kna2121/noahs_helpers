@@ -206,6 +206,25 @@ class Player4(Player):
         genders = self.species_on_ark.get(species_id, set())
         return Gender.Male in genders and Gender.Female in genders
 
+    def _is_gender_on_ark(self, species_id: int, gender: Gender) -> bool:
+        """Check if a specific gender of a species is already on the Ark."""
+        if gender == Gender.Unknown:
+            return False  # Unknown gender doesn't count as redundant
+        genders = self.species_on_ark.get(species_id, set())
+        return gender in genders
+
+    def _has_nearby_helpers(self) -> bool:
+        """Check if there are other helpers within 5km sight radius."""
+        if self.sight is None:
+            return False
+        
+        for cellview in self.sight:
+            # Check if there are any helpers in this cell that aren't us
+            if any(helper.id != self.id for helper in cellview.helpers):
+                return True
+        
+        return False
+
     def _get_next_species_to_broadcast(self) -> Optional[int]:
         """Get the next species to broadcast that is complete on Ark but not yet broadcast."""
         if not self.ark_view:
@@ -233,7 +252,7 @@ class Player4(Player):
         return None
 
     def _compose_message(self) -> int:
-        """Send assignments first, then species-on-ark when at Ark, otherwise status bits."""
+        """Send assignments first, then species-on-ark when at Ark or randomly when helpers nearby."""
         if self.kind != Kind.Helper:
             return 0
 
@@ -251,6 +270,23 @@ class Player4(Player):
                 msg = 0x80 | 0x40 | (species_to_broadcast & 0x3F)
                 self.broadcasted_species.add(species_to_broadcast)
                 return msg if self.is_message_valid(msg) else (msg & 0xFF)
+
+        # Randomly broadcast species-on-ark info when other helpers are nearby (15% chance)
+        # This helps spread information even when helpers are far from the Ark
+        if self._has_nearby_helpers() and self.species_on_ark:
+            # 15% chance to broadcast a complete species
+            if random.random() < 0.15:
+                # Find any complete species to broadcast (not just unbroadcast ones)
+                complete_species = [
+                    sid for sid in self.species_on_ark.keys()
+                    if self._is_species_complete_on_ark(sid)
+                ]
+                if complete_species:
+                    # Randomly pick one to broadcast
+                    species_to_broadcast = random.choice(complete_species)
+                    # Message format: 0x80 | 0x40 | species_id (bits 0-5)
+                    msg = 0x80 | 0x40 | (species_to_broadcast & 0x3F)
+                    return msg if self.is_message_valid(msg) else (msg & 0xFF)
 
         # Regular status message: returning flag + flock size
         msg = 0
@@ -281,6 +317,31 @@ class Player4(Player):
             # Otherwise only the "heading home" bit matters for congestion tracking.
             elif msg.contents & 0x40:
                 self.helpers_returning.add(msg.from_helper.id)
+
+    def _release_complete_species_animals(self) -> Optional[Action]:
+        """Release animals that are redundant: complete species or duplicate genders on Ark."""
+        if not self.flock:
+            return None
+        
+        # Find animals that are redundant:
+        # 1. Species already complete on the Ark (both genders present)
+        # 2. Animal's gender already on the Ark (even if species not complete)
+        animals_to_release = []
+        for animal in self.flock:
+            # Check if species is complete
+            if self._is_species_complete_on_ark(animal.species_id):
+                animals_to_release.append(animal)
+            # Check if this specific gender is already on the Ark
+            elif self._is_gender_on_ark(animal.species_id, animal.gender):
+                animals_to_release.append(animal)
+        
+        if not animals_to_release:
+            return None
+        
+        # Release the worst-scoring animal from redundant animals
+        # This frees up space for more valuable animals
+        worst_animal = max(animals_to_release, key=lambda a: self._score_animal(a))
+        return Release(worst_animal)
 
     # === Perception, Scoring & Target Selection ===
 
@@ -366,6 +427,9 @@ class Player4(Player):
                 continue
             # Skip animals from species that are already complete on the Ark
             if self._is_species_complete_on_ark(animal.species_id):
+                continue
+            # Skip animals whose gender is already on the Ark (avoid duplicates)
+            if self._is_gender_on_ark(animal.species_id, animal.gender):
                 continue
             score = self._score_animal(animal, assume_unknown_desired=assume_unknown)
             if best_animal is None or best_score is None or (score < best_score):
@@ -503,6 +567,12 @@ class Player4(Player):
 
         if self.kind == Kind.Noah:
             return None
+
+        # First priority: release animals from species already complete on the Ark
+        # This frees up space immediately when we learn a species is complete
+        release_complete_action = self._release_complete_species_animals()
+        if release_complete_action:
+            return release_complete_action
 
         my_cell = self._get_my_cell()
         self._prune_unavailable_animals(my_cell)
