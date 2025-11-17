@@ -23,6 +23,7 @@ def _distance(x1: float, y1: float, x2: float, y2: float) -> float:
 
 class Player4(Player):
     """Helper implementation that patrols safe regions and coordinates via messages."""
+
     SAFE_MANHATTAN_LIMIT = c.START_RAIN  # can get back to ark before deadline
 
     def __init__(
@@ -69,10 +70,13 @@ class Player4(Player):
             + 100
         )
         self.default_priority = (max_pop, 999)
-        self.rare_cutoff = min(
-            (priority[0] for priority in self.species_priority.values()),
-            default=0,
-        ) + 1
+        self.rare_cutoff = (
+            min(
+                (priority[0] for priority in self.species_priority.values()),
+                default=0,
+            )
+            + 1
+        )
 
         self.species_on_ark: dict[int, set[Gender]] = {}
         self.known_assignments: dict[int, int] = {}
@@ -120,7 +124,9 @@ class Player4(Player):
         min_x = self.safe_bounds[0] + col * region_width
         max_x = min(self.safe_bounds[0] + (col + 1) * region_width, self.safe_bounds[1])
         min_y = self.safe_bounds[2] + row * region_height
-        max_y = min(self.safe_bounds[2] + (row + 1) * region_height, self.safe_bounds[3])
+        max_y = min(
+            self.safe_bounds[2] + (row + 1) * region_height, self.safe_bounds[3]
+        )
 
         return (min_x, max_x, min_y, max_y)
 
@@ -239,9 +245,7 @@ class Player4(Player):
             need_gender = 0
         else:
             need_gender = (
-                0
-                if animal.gender not in genders_on_ark.union(flock_genders)
-                else 1
+                0 if animal.gender not in genders_on_ark.union(flock_genders) else 1
             )
 
         duplicates = flock_species_count
@@ -346,7 +350,9 @@ class Player4(Player):
 
             if (cellview.x, cellview.y) in self.blocked_cells:
                 continue
-            best_animal, score = self._best_animal_in_cell(cellview, assume_unknown=True)
+            best_animal, score = self._best_animal_in_cell(
+                cellview, assume_unknown=True
+            )
             if best_animal is None or score is None:
                 continue
             dist = _distance(*self.position, cellview.x, cellview.y)
@@ -457,7 +463,10 @@ class Player4(Player):
         if self._tracking_target_active():
             return self.tracking_cell
 
-        if self.patrol_target is None or _distance(*self.position, *self.patrol_target) < 0.5:
+        if (
+            self.patrol_target is None
+            or _distance(*self.position, *self.patrol_target) < 0.5
+        ):
             self._pick_new_patrol_target()
 
         if self.tracking_cell:
