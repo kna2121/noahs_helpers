@@ -40,6 +40,7 @@ class Player4(Player):
         obtains, etc.) so we can respond deterministically to arena updates.
         """
 
+        # Runtime state refreshed every turn from the arena snapshot.
         self.turn = 0
         self.is_raining = False
         self.sight = None
@@ -56,11 +57,13 @@ class Player4(Player):
 
         self.assignment_broadcasted = False
 
+        # Movement targets live inside the global safe area and a per-helper slice.
         self.safe_bounds = self._compute_safe_bounds()
         self.region_bounds = self._compute_region_bounds()
         self.patrol_target: Optional[tuple[float, float]] = None
         self.tracking_cell: Optional[tuple[int, int]] = None
 
+        # Pre-compute rarity ranks so greedy selection remains deterministic.
         self.species_priority = self._build_species_priority(species_populations)
         max_pop = (
             max((priority[0] for priority in self.species_priority.values()), default=0)
@@ -163,6 +166,8 @@ class Player4(Player):
             self.unavailable_animals.add(self.pending_obtain)
             position_cell = (int(self.position[0]), int(self.position[1]))
             self.blocked_cells[position_cell] = self.turn + 5
+            self.tracking_cell = None
+            self.patrol_target = None
 
         self.pending_obtain = None
 
@@ -196,8 +201,10 @@ class Player4(Player):
     def _process_messages(self, messages: list[Message]) -> None:
         """Decode broadcasts from neighbors and keep track of their assignments/state."""
         for msg in messages:
+            # High bit indicates the sender is publishing its patrol assignment.
             if msg.contents & 0x80:
                 self.known_assignments[msg.from_helper.id] = msg.contents & 0x3F
+            # Otherwise only the "heading home" bit matters for congestion tracking.
             elif msg.contents & 0x40:
                 self.helpers_returning.add(msg.from_helper.id)
 
@@ -248,6 +255,8 @@ class Player4(Player):
         duplicates = flock_species_count
         unknown_penalty = 0 if animal.gender != Gender.Unknown else 1
 
+        # Lower tuples win via lexicographic ordering: avoid duplicates first,
+        # then chase rare species/genders, finally break ties by distance/id.
         return (
             duplicate_species_penalty,
             population,
@@ -264,6 +273,7 @@ class Player4(Player):
         best_animal: Optional[Animal] = None
         best_score: Optional[tuple[int, int, int, int, int]] = None
         for animal in cellview.animals:
+            # Ignore anything already collected or temporarily blocked.
             if animal in self.flock:
                 continue
             if animal in self.unavailable_animals:
@@ -285,6 +295,8 @@ class Player4(Player):
 
     def _should_return_to_ark(self) -> bool:
         """Decide when to abandon exploration and head back to the Ark."""
+        if self.is_flock_full():
+            return True
         if self.kind != Kind.Helper:
             return False
 
@@ -353,6 +365,7 @@ class Player4(Player):
             if best_animal is None or score is None:
                 continue
             dist = _distance(*self.position, cellview.x, cellview.y)
+            # Prefer better animal scores, then the closest option as a tiebreaker.
             candidate_score = (*score, dist)
             if best_cell is None or candidate_score < best_score:
                 best_cell = (cellview.x, cellview.y)
@@ -408,6 +421,7 @@ class Player4(Player):
             self.patrol_target = None
             return Move(*self.move_towards(*self.ark_position))
 
+        # When full, eject the least valuable passenger if something better is here.
         release_action = self._maybe_release_for_priority(my_cell)
         if release_action:
             return release_action
@@ -417,6 +431,7 @@ class Player4(Player):
             self.pending_obtain = obtain_candidate
             return Obtain(obtain_candidate)
 
+        # Otherwise, keep patrolling—either chase a seen cell or wander the region.
         self._update_tracking_cell()
         move_target = self._select_move_target()
 
@@ -427,12 +442,17 @@ class Player4(Player):
         return Move(*next_pos)
 
     def _select_animal_here(self, cellview: CellView) -> Optional[Animal]:
-        """Pick an animal to obtain in the current cell if capacity allows."""
+        # If we've already failed an obtain in this cell, DO NOT try again
+        cell_coords = (cellview.x, cellview.y)
+        if cell_coords in self.blocked_cells:
+            return None
+
         if self.is_flock_full():
             return None
 
         animal, _ = self._best_animal_in_cell(cellview)
         return animal
+
 
     def _prune_unavailable_animals(self, cellview: CellView) -> None:
         """Drop unavailable animals that left the cell so we can reconsider later."""
@@ -479,6 +499,7 @@ class Player4(Player):
         if self.kind == Kind.Noah:
             return self.position
 
+        # Random-walk inside the legal move radius to shake free from impasses.
         for _ in range(20):
             angle = random.uniform(0, math.tau)
             distance = random.uniform(0.4, c.MAX_DISTANCE_KM * 0.95)
