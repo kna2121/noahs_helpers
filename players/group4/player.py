@@ -85,6 +85,10 @@ class Player4(Player):
         self.unavailable_animals: set[Animal] = set()
         # Cells that we want to skip until a certain turn because they were contested.
         self.blocked_cells: dict[tuple[int, int], int] = {}
+        # Track which species we've already broadcast to avoid redundant messages
+        self.broadcasted_species: set[int] = set()
+        # Rotating index for broadcasting species on ark
+        self.species_broadcast_index = 0
 
     # === Territory & Priority Helpers ===
 
@@ -172,24 +176,83 @@ class Player4(Player):
         self.pending_obtain = None
 
     def _update_ark_species(self, ark_view) -> None:
-        """Cache which genders already made it to the Ark to avoid duplicates."""
-        for animal in ark_view.animals:
-            if animal.gender == Gender.Unknown:
-                continue
-            if animal.species_id not in self.species_on_ark:
-                self.species_on_ark[animal.species_id] = set()
-            self.species_on_ark[animal.species_id].add(animal.gender)
+        """Refresh complete Ark species status when at the Ark, ensuring latest information."""
+        # When at the Ark, do a complete refresh from the actual Ark view
+        # This ensures helpers get the latest status regardless of missed messages
+        if self.is_in_ark():
+            # Rebuild species_on_ark from scratch based on current Ark state
+            self.species_on_ark = {}
+            for animal in ark_view.animals:
+                if animal.gender == Gender.Unknown:
+                    continue
+                if animal.species_id not in self.species_on_ark:
+                    self.species_on_ark[animal.species_id] = set()
+                self.species_on_ark[animal.species_id].add(animal.gender)
+            # Reset broadcast tracking so we can broadcast what we see
+            # This allows helpers to share the latest complete species
+            self.broadcasted_species.clear()
+            self.species_broadcast_index = 0
+        else:
+            # When not at Ark, just update incrementally (from messages or partial views)
+            for animal in ark_view.animals:
+                if animal.gender == Gender.Unknown:
+                    continue
+                if animal.species_id not in self.species_on_ark:
+                    self.species_on_ark[animal.species_id] = set()
+                self.species_on_ark[animal.species_id].add(animal.gender)
+
+    def _is_species_complete_on_ark(self, species_id: int) -> bool:
+        """Check if a species has both genders on the Ark."""
+        genders = self.species_on_ark.get(species_id, set())
+        return Gender.Male in genders and Gender.Female in genders
+
+    def _get_next_species_to_broadcast(self) -> Optional[int]:
+        """Get the next species to broadcast that is complete on Ark but not yet broadcast."""
+        if not self.ark_view:
+            return None
+        
+        # Find all complete species that haven't been broadcast yet
+        complete_species = [
+            sid for sid in self.species_on_ark.keys()
+            if self._is_species_complete_on_ark(sid) and sid not in self.broadcasted_species
+        ]
+        
+        if not complete_species:
+            return None
+        
+        # Rotate through species to broadcast them all over time
+        # Use turn number to cycle through, ensuring we eventually broadcast all
+        if self.species_broadcast_index >= len(complete_species):
+            self.species_broadcast_index = 0
+        
+        if complete_species:
+            species = complete_species[self.species_broadcast_index % len(complete_species)]
+            self.species_broadcast_index = (self.species_broadcast_index + 1) % max(len(complete_species), 1)
+            return species
+        
+        return None
 
     def _compose_message(self) -> int:
-        """Send assignments first, otherwise flood status bits (returning + flock size)."""
+        """Send assignments first, then species-on-ark when at Ark, otherwise status bits."""
         if self.kind != Kind.Helper:
             return 0
 
+        # First message: broadcast region assignment
         if not self.assignment_broadcasted and self.region_index is not None:
             msg = 0x80 | (self.region_index & 0x3F)
             self.assignment_broadcasted = True
             return msg if self.is_message_valid(msg) else (msg & 0xFF)
 
+        # When at the Ark, broadcast species that are complete (both genders present)
+        if self.is_in_ark() and self.ark_view:
+            species_to_broadcast = self._get_next_species_to_broadcast()
+            if species_to_broadcast is not None:
+                # Message format: 0x80 | 0x40 | species_id (bits 0-5)
+                msg = 0x80 | 0x40 | (species_to_broadcast & 0x3F)
+                self.broadcasted_species.add(species_to_broadcast)
+                return msg if self.is_message_valid(msg) else (msg & 0xFF)
+
+        # Regular status message: returning flag + flock size
         msg = 0
         if self._should_return_to_ark():
             msg |= 0x40
@@ -201,9 +264,20 @@ class Player4(Player):
     def _process_messages(self, messages: list[Message]) -> None:
         """Decode broadcasts from neighbors and keep track of their assignments/state."""
         for msg in messages:
-            # High bit indicates the sender is publishing its patrol assignment.
+            # High bit indicates assignment or species-on-ark message
             if msg.contents & 0x80:
-                self.known_assignments[msg.from_helper.id] = msg.contents & 0x3F
+                # Bit 6 distinguishes: 0 = assignment, 1 = species-on-ark
+                if msg.contents & 0x40:
+                    # Species-on-ark message: mark this species as complete
+                    species_id = msg.contents & 0x3F
+                    # Mark both genders as present since it's complete
+                    if species_id not in self.species_on_ark:
+                        self.species_on_ark[species_id] = set()
+                    self.species_on_ark[species_id].add(Gender.Male)
+                    self.species_on_ark[species_id].add(Gender.Female)
+                else:
+                    # Assignment message
+                    self.known_assignments[msg.from_helper.id] = msg.contents & 0x3F
             # Otherwise only the "heading home" bit matters for congestion tracking.
             elif msg.contents & 0x40:
                 self.helpers_returning.add(msg.from_helper.id)
@@ -280,22 +354,27 @@ class Player4(Player):
 
     def _best_animal_in_cell(
         self, cellview: CellView, assume_unknown: bool = False
-    ) -> tuple[Animal, tuple[int, int, int, int, int]] | tuple[None, None]:
+    ) -> tuple[Animal, tuple[int, int, int, int, int, int]] | tuple[None, None]:
         """Return the highest ranked animal in a cell along with its score tuple."""
         best_animal: Optional[Animal] = None
-        best_score: Optional[tuple[int, int, int, int, int]] = None
+        best_score: Optional[tuple[int, int, int, int, int, int]] = None
         for animal in cellview.animals:
             # Ignore anything already collected or temporarily blocked.
             if animal in self.flock:
                 continue
             if animal in self.unavailable_animals:
                 continue
+            # Skip animals from species that are already complete on the Ark
+            if self._is_species_complete_on_ark(animal.species_id):
+                continue
             score = self._score_animal(animal, assume_unknown_desired=assume_unknown)
-            if best_animal is None or (score < best_score):
+            if best_animal is None or best_score is None or (score < best_score):
                 best_animal = animal
                 best_score = score
 
-        return (best_animal, best_score) if best_animal else (None, None)
+        if best_animal is not None and best_score is not None:
+            return (best_animal, best_score)
+        return (None, None)
 
     def _purge_blocked_cells(self) -> None:
         """Remove stale entries so we eventually reconsider cells after timeout."""
@@ -379,7 +458,7 @@ class Player4(Player):
             dist = _distance(*self.position, cellview.x, cellview.y)
             # Prefer better animal scores, then the closest option as a tiebreaker.
             candidate_score = (*score, dist)
-            if best_cell is None or candidate_score < best_score:
+            if best_cell is None or best_score is None or candidate_score < best_score:
                 best_cell = (cellview.x, cellview.y)
                 best_score = candidate_score
 
@@ -489,8 +568,8 @@ class Player4(Player):
 
     def _select_move_target(self) -> tuple[float, float]:
         """Decide which coordinate to move towards this turn."""
-        if self._tracking_target_active():
-            return self.tracking_cell
+        if self._tracking_target_active() and self.tracking_cell:
+            return (float(self.tracking_cell[0]), float(self.tracking_cell[1]))
 
         if (
             self.patrol_target is None
@@ -499,7 +578,7 @@ class Player4(Player):
             self._pick_new_patrol_target()
 
         if self.tracking_cell:
-            return self.tracking_cell
+            return (float(self.tracking_cell[0]), float(self.tracking_cell[1]))
 
         if self.patrol_target:
             return self.patrol_target
