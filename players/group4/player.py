@@ -235,36 +235,48 @@ class Player4(Player):
     def _score_animal(
         self, animal: Animal, assume_unknown_desired: bool = False
     ) -> tuple[int, int, int, int, int, int]:
-        """Return a tuple that allows comparing animals across rarity/need heuristics."""
+        """
+        Lower scores are better.
+        New scoring strongly incentivizes completing species pairs.
+        """
         population, sid = self._species_priority(animal.species_id)
+
         genders_on_ark = self.species_on_ark.get(animal.species_id, set())
         flock_genders = {
             a.gender for a in self.flock if a.species_id == animal.species_id
         }
 
-        flock_species_count = self._flock_species_count(animal.species_id)
-        duplicate_species_penalty = 0 if flock_species_count == 0 else 1
+        # ---- NEW LOGIC: strong bonus for pairing genders ----
+        pairing_bonus = 0
+        if animal.gender != Gender.Unknown:
+            # If Ark has one gender, we want the other very badly
+            if len(genders_on_ark) == 1 and animal.gender not in genders_on_ark:
+                pairing_bonus -= 3  # big positive incentive
 
+            # If flock has one gender, chase completing that pair too
+            if len(flock_genders) == 1 and animal.gender not in flock_genders:
+                pairing_bonus -= 2
+
+        # Fallback: unknown gender sometimes acceptable
         if animal.gender == Gender.Unknown and assume_unknown_desired:
-            need_gender = 0
-        else:
-            need_gender = (
-                0 if animal.gender not in genders_on_ark.union(flock_genders) else 1
-            )
+            pairing_bonus -= 1
 
-        duplicates = flock_species_count
-        unknown_penalty = 0 if animal.gender != Gender.Unknown else 1
+        # Duplicates still penalized
+        duplicate_species_penalty = 1 if animal.species_id in genders_on_ark.union(flock_genders) else 0
+        unknown_penalty = 1 if animal.gender == Gender.Unknown else 0
+        duplicates = self._flock_species_count(animal.species_id)
 
-        # Lower tuples win via lexicographic ordering: avoid duplicates first,
-        # then chase rare species/genders, finally break ties by distance/id.
+        # Score tuple: lexicographic ordering minimizes this
         return (
-            duplicate_species_penalty,
-            population,
-            need_gender,
-            duplicates,
-            unknown_penalty,
+            duplicate_species_penalty,  # avoid waste
+            population,                 # prioritize rare
+            -pairing_bonus,             # 🔥 prefer completing pairs first
+            duplicates,                 # fewer extras
+            unknown_penalty,            # gender clarity better
             sid,
         )
+
+
 
     def _best_animal_in_cell(
         self, cellview: CellView, assume_unknown: bool = False
