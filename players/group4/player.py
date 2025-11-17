@@ -1,7 +1,4 @@
 from __future__ import annotations
-
-"""Coordinated Group 4 helper strategy with territory assignment and messaging."""
-
 import math
 import random
 from typing import Optional
