@@ -217,38 +217,44 @@ class Player4(Player):
         """Check if there are other helpers within 5km sight radius."""
         if self.sight is None:
             return False
-        
+
         for cellview in self.sight:
             # Check if there are any helpers in this cell that aren't us
             if any(helper.id != self.id for helper in cellview.helpers):
                 return True
-        
+
         return False
 
     def _get_next_species_to_broadcast(self) -> Optional[int]:
         """Get the next species to broadcast that is complete on Ark but not yet broadcast."""
         if not self.ark_view:
             return None
-        
+
         # Find all complete species that haven't been broadcast yet
         complete_species = [
-            sid for sid in self.species_on_ark.keys()
-            if self._is_species_complete_on_ark(sid) and sid not in self.broadcasted_species
+            sid
+            for sid in self.species_on_ark.keys()
+            if self._is_species_complete_on_ark(sid)
+            and sid not in self.broadcasted_species
         ]
-        
+
         if not complete_species:
             return None
-        
+
         # Rotate through species to broadcast them all over time
         # Use turn number to cycle through, ensuring we eventually broadcast all
         if self.species_broadcast_index >= len(complete_species):
             self.species_broadcast_index = 0
-        
+
         if complete_species:
-            species = complete_species[self.species_broadcast_index % len(complete_species)]
-            self.species_broadcast_index = (self.species_broadcast_index + 1) % max(len(complete_species), 1)
+            species = complete_species[
+                self.species_broadcast_index % len(complete_species)
+            ]
+            self.species_broadcast_index = (self.species_broadcast_index + 1) % max(
+                len(complete_species), 1
+            )
             return species
-        
+
         return None
 
     def _compose_message(self) -> int:
@@ -278,7 +284,8 @@ class Player4(Player):
             if random.random() < 0.15:
                 # Find any complete species to broadcast (not just unbroadcast ones)
                 complete_species = [
-                    sid for sid in self.species_on_ark.keys()
+                    sid
+                    for sid in self.species_on_ark.keys()
                     if self._is_species_complete_on_ark(sid)
                 ]
                 if complete_species:
@@ -322,7 +329,7 @@ class Player4(Player):
         """Release animals that are redundant: complete species or duplicate genders on Ark."""
         if not self.flock:
             return None
-        
+
         # Find animals that are redundant:
         # 1. Species already complete on the Ark (both genders present)
         # 2. Animal's gender already on the Ark (even if species not complete)
@@ -334,10 +341,10 @@ class Player4(Player):
             # Check if this specific gender is already on the Ark
             elif self._is_gender_on_ark(animal.species_id, animal.gender):
                 animals_to_release.append(animal)
-        
+
         if not animals_to_release:
             return None
-        
+
         # Release the worst-scoring animal from redundant animals
         # This frees up space for more valuable animals
         worst_animal = max(animals_to_release, key=lambda a: self._score_animal(a))
@@ -397,21 +404,21 @@ class Player4(Player):
             pairing_bonus -= 1
 
         # Duplicates still penalized
-        duplicate_species_penalty = 1 if animal.species_id in genders_on_ark.union(flock_genders) else 0
+        duplicate_species_penalty = (
+            1 if animal.species_id in genders_on_ark.union(flock_genders) else 0
+        )
         unknown_penalty = 1 if animal.gender == Gender.Unknown else 0
         duplicates = self._flock_species_count(animal.species_id)
 
         # Score tuple: lexicographic ordering minimizes this
         return (
             duplicate_species_penalty,  # avoid waste
-            population,                 # prioritize rare
-            -pairing_bonus,             # 🔥 prefer completing pairs first
-            duplicates,                 # fewer extras
-            unknown_penalty,            # gender clarity better
+            population,  # prioritize rare
+            -pairing_bonus,  # 🔥 prefer completing pairs first
+            duplicates,  # fewer extras
+            unknown_penalty,  # gender clarity better
             sid,
         )
-
-
 
     def _best_animal_in_cell(
         self, cellview: CellView, assume_unknown: bool = False
@@ -613,7 +620,6 @@ class Player4(Player):
 
         animal, _ = self._best_animal_in_cell(cellview)
         return animal
-
 
     def _prune_unavailable_animals(self, cellview: CellView) -> None:
         """Drop unavailable animals that left the cell so we can reconsider later."""
