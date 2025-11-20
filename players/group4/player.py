@@ -89,6 +89,12 @@ class Player4(Player):
         self.broadcasted_species: set[int] = set()
         # Rotating index for broadcasting species on ark
         self.species_broadcast_index = 0
+        # Track rare-first sweep progress so we can change behavior after first return
+        self.first_sweep_done = False
+        self.first_sweep_returned = False
+        # Keep state when we've committed to head back or stay parked on the Ark
+        self.force_return = False
+        self.hunkered_down = False
 
     # === Territory & Priority Helpers ===
 
@@ -134,10 +140,28 @@ class Player4(Player):
 
         return (min_x, max_x, min_y, max_y)
 
+    def _effective_safe_limit(self) -> float:
+        """Shrink the safe radius once rain begins to mimic a moving storm."""
+        base_limit = float(self.SAFE_MANHATTAN_LIMIT)
+        if not self.is_raining:
+            return base_limit
+
+        end_rain = getattr(c, "END_RAIN", None)
+        if isinstance(end_rain, int) and end_rain > c.START_RAIN:
+            total_rain_duration = max(1, end_rain - c.START_RAIN)
+            elapsed_since_rain = max(0, self.turn - c.START_RAIN)
+            factor = max(0.0, 1.0 - (elapsed_since_rain / total_rain_duration))
+            return max(0.0, factor * base_limit)
+
+        # Fallback: shrink by one cell per turn during rain
+        shrink = max(0.0, float(self.turn - c.START_RAIN))
+        return max(0.0, base_limit - shrink)
+
     def _is_point_safe(self, x: float, y: float) -> bool:
         """Check Manhattan distance constraint back to the Ark."""
         ax, ay = self.ark_position
-        return abs(x - ax) + abs(y - ay) <= self.SAFE_MANHATTAN_LIMIT
+        limit = self._effective_safe_limit()
+        return abs(x - ax) + abs(y - ay) <= limit
 
     # === Messaging & Snapshot Handling ===
 
@@ -156,8 +180,31 @@ class Player4(Player):
             self._update_ark_species(snapshot.ark_view)
 
         self._handle_pending_obtain()
+        self._update_phase_flags()
+        if self.hunkered_down and not self.is_in_ark():
+            # Somehow pushed out of the Ark while hunkered: re-enter immediately
+            self.force_return = True
+        if self.is_raining and self.is_in_ark():
+            self.hunkered_down = True
 
         return self._compose_message()
+
+    def _update_phase_flags(self) -> None:
+        """Flip from the rare-first sweep to normal play once we've deposited animals."""
+        was_first_sweep = not self.first_sweep_done
+        if self.is_in_ark() and self.flock:
+            self.first_sweep_returned = True
+            self.first_sweep_done = True
+        elif not self.first_sweep_done and self.turn >= c.START_RAIN // 2:
+            self.first_sweep_done = True
+
+        if was_first_sweep and self.first_sweep_done:
+            # Reset patrol so normal safe-region behavior picks new anchors
+            self.tracking_cell = None
+            self.patrol_target = None
+
+    def _is_first_sweep_active(self) -> bool:
+        return not (self.first_sweep_done or self.first_sweep_returned)
 
     def _handle_pending_obtain(self) -> None:
         """Detect whether the animal we attempted to obtain actually joined the flock."""
@@ -169,7 +216,7 @@ class Player4(Player):
         else:
             self.unavailable_animals.add(self.pending_obtain)
             position_cell = (int(self.position[0]), int(self.position[1]))
-            self.blocked_cells[position_cell] = self.turn + 5
+            self._block_cell_temporarily(position_cell, duration=5)
             self.tracking_cell = None
             self.patrol_target = None
 
@@ -334,6 +381,7 @@ class Player4(Player):
         # 1. Species already complete on the Ark (both genders present)
         # 2. Animal's gender already on the Ark (even if species not complete)
         animals_to_release = []
+        seen_pairs: dict[tuple[int, Gender], Animal] = {}
         for animal in self.flock:
             # Check if species is complete
             if self._is_species_complete_on_ark(animal.species_id):
@@ -341,6 +389,13 @@ class Player4(Player):
             # Check if this specific gender is already on the Ark
             elif self._is_gender_on_ark(animal.species_id, animal.gender):
                 animals_to_release.append(animal)
+
+            if animal.gender != Gender.Unknown:
+                key = (animal.species_id, animal.gender)
+                if key in seen_pairs:
+                    animals_to_release.append(animal)
+                else:
+                    seen_pairs[key] = animal
 
         if not animals_to_release:
             return None
@@ -366,9 +421,21 @@ class Player4(Player):
         """Euclidean distance to Ark, helpful for conservative returns."""
         return _distance(*self.position, *self.ark_position)
 
+    def _manhattan_distance_to_ark(self) -> float:
+        ax, ay = self.ark_position
+        return abs(self.position[0] - ax) + abs(self.position[1] - ay)
+
     def _flock_species_count(self, species_id: int) -> int:
         """Count how many animals in our flock already belong to the given species."""
         return sum(1 for animal in self.flock if animal.species_id == species_id)
+
+    def _has_species_gender_in_flock(self, species_id: int, gender: Gender) -> bool:
+        if gender == Gender.Unknown:
+            return False
+        return any(
+            animal.species_id == species_id and animal.gender == gender
+            for animal in self.flock
+        )
 
     def _species_priority(self, species_id: int) -> tuple[int, int]:
         """Look up rarity tuple or fall back to the default high score."""
@@ -438,6 +505,12 @@ class Player4(Player):
             # Skip animals whose gender is already on the Ark (avoid duplicates)
             if self._is_gender_on_ark(animal.species_id, animal.gender):
                 continue
+            if self._has_species_gender_in_flock(animal.species_id, animal.gender):
+                continue
+            if self._is_first_sweep_active():
+                population, _ = self._species_priority(animal.species_id)
+                if population > self.rare_cutoff:
+                    continue
             score = self._score_animal(animal, assume_unknown_desired=assume_unknown)
             if best_animal is None or best_score is None or (score < best_score):
                 best_animal = animal
@@ -446,6 +519,13 @@ class Player4(Player):
         if best_animal is not None and best_score is not None:
             return (best_animal, best_score)
         return (None, None)
+
+    def _block_cell_temporarily(
+        self, cell: tuple[int, int], duration: int = 6
+    ) -> None:
+        """Block a cell for a few turns to avoid hovering or repeated contention."""
+        existing_expiry = self.blocked_cells.get(cell, self.turn)
+        self.blocked_cells[cell] = max(existing_expiry, self.turn + duration)
 
     def _purge_blocked_cells(self) -> None:
         """Remove stale entries so we eventually reconsider cells after timeout."""
@@ -457,16 +537,31 @@ class Player4(Player):
 
     def _should_return_to_ark(self) -> bool:
         """Decide when to abandon exploration and head back to the Ark."""
-        if self.is_flock_full():
-            return True
         if self.kind != Kind.Helper:
             return False
 
-        unique_species = {animal.species_id for animal in self.flock}
-
-        if self.is_raining:
+        if self.is_flock_full():
             return True
 
+        if self._is_first_sweep_active():
+            late_window = max(0, c.START_RAIN - 20)
+            if self.turn >= late_window:
+                return True
+            # If we've wandered extremely far, start heading back to ensure we make it.
+            if self._distance_from_ark() >= self.SAFE_MANHATTAN_LIMIT * 0.95:
+                return True
+            return False
+
+        dist_to_ark = self._manhattan_distance_to_ark()
+        limit = self._effective_safe_limit()
+        if limit <= 0.0 and dist_to_ark > 0.0:
+            return True
+
+        safety_margin = 0.85 if not self.is_raining else 0.7
+        if limit > 0.0 and dist_to_ark >= limit * safety_margin:
+            return True
+
+        unique_species = {animal.species_id for animal in self.flock}
         if len(unique_species) >= 4:
             return True
 
@@ -477,7 +572,7 @@ class Player4(Player):
 
     def _pick_new_patrol_target(self) -> None:
         """Select a random waypoint within our assigned region or the safe bounds."""
-        if not self.region_bounds:
+        if self._is_first_sweep_active() or not self.region_bounds:
             self.patrol_target = self._random_point_in_safe_area()
             return
 
@@ -492,7 +587,13 @@ class Player4(Player):
         self.patrol_target = self._random_point_in_safe_area()
 
     def _random_point_in_safe_area(self) -> tuple[float, float]:
-        """Sample a safe coordinate when the region produces no usable destinations."""
+        """Sample a coordinate for patrolling, unrestricted during the first sweep."""
+        if self._is_first_sweep_active():
+            return (
+                random.uniform(0.0, float(c.X - 1)),
+                random.uniform(0.0, float(c.Y - 1)),
+            )
+
         min_x, max_x, min_y, max_y = self.safe_bounds
         for _ in range(20):
             x = random.uniform(min_x, max_x)
@@ -514,7 +615,9 @@ class Player4(Player):
         for cellview in self.sight:
             if not cellview.animals:
                 continue
-            if not self._is_point_safe(cellview.x, cellview.y):
+            if (not self._is_first_sweep_active()) and not self._is_point_safe(
+                cellview.x, cellview.y
+            ):
                 continue
             if any(helper.id != self.id for helper in cellview.helpers):
                 continue
@@ -549,14 +652,14 @@ class Player4(Player):
                 return False
             del self.blocked_cells[(tx, ty)]
 
-        if not self._is_point_safe(tx, ty):
+        if (not self._is_first_sweep_active()) and not self._is_point_safe(tx, ty):
             self.tracking_cell = None
             return False
 
         if self.sight and self.sight.cell_is_in_sight(tx, ty):
             cell = self.sight.get_cellview_at(tx, ty)
             if any(helper.id != self.id for helper in cell.helpers):
-                self.blocked_cells[(tx, ty)] = self.turn + 5
+                self._block_cell_temporarily((tx, ty), duration=5)
                 self.tracking_cell = None
                 return False
 
@@ -585,9 +688,24 @@ class Player4(Player):
         self._prune_unavailable_animals(my_cell)
 
         if self._should_return_to_ark():
+            self.force_return = True
+
+        if self.hunkered_down and self.is_in_ark():
             self.tracking_cell = None
             self.patrol_target = None
-            return Move(*self.move_towards(*self.ark_position))
+            return Move(*self.ark_position)
+
+        if self.force_return:
+            self.tracking_cell = None
+            self.patrol_target = None
+            if self.is_in_ark():
+                if self.is_raining:
+                    self.hunkered_down = True
+                    self.force_return = False
+                    return Move(*self.ark_position)
+                self.force_return = False
+            else:
+                return Move(*self.move_towards(*self.ark_position))
 
         # When full, eject the least valuable passenger if something better is here.
         release_action = self._maybe_release_for_priority(my_cell)
@@ -619,6 +737,10 @@ class Player4(Player):
             return None
 
         animal, _ = self._best_animal_in_cell(cellview)
+        if animal is None and cellview.animals:
+            self._block_cell_temporarily(cell_coords, duration=7)
+            if self.tracking_cell == cell_coords:
+                self.tracking_cell = None
         return animal
 
     def _prune_unavailable_animals(self, cellview: CellView) -> None:
