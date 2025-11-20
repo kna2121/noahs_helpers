@@ -22,6 +22,7 @@ class Player4(Player):
     """Helper implementation that patrols safe regions and coordinates via messages."""
 
     SAFE_MANHATTAN_LIMIT = c.START_RAIN  # can get back to ark before deadline
+    ASSIGNMENT_TURN_LIMIT = 1000
 
     def __init__(
         self,
@@ -89,6 +90,9 @@ class Player4(Player):
         self.broadcasted_species: set[int] = set()
         # Rotating index for broadcasting species on ark
         self.species_broadcast_index = 0
+        self.target_species: Optional[set[int]] = self._compute_target_species(
+            species_populations
+        )
 
     # === Territory & Priority Helpers ===
 
@@ -138,6 +142,44 @@ class Player4(Player):
         """Check Manhattan distance constraint back to the Ark."""
         ax, ay = self.ark_position
         return abs(x - ax) + abs(y - ay) <= self.SAFE_MANHATTAN_LIMIT
+
+    def _compute_target_species(
+        self, species_populations: dict[str, int]
+        ) -> Optional[set[int]]:
+        """Assign helpers proportionally to rarity (not all to the rarest)."""
+        if self.kind != Kind.Helper or self.helper_index is None:
+            return None
+        if not species_populations:
+            return None
+
+        # Build weighted list of species IDs
+        max_population = max(species_populations.values(), default=0)
+        weighted_species: list[int] = []
+
+        for letter, pop in sorted(species_populations.items()):
+            sid = ord(letter) - ord("a")
+            weight = max(1, (max_population - pop) + 1)  # rarer → bigger weight
+            weighted_species.extend([sid] * weight)
+
+        total_weights = len(weighted_species)
+        num_helpers = max(1, self.num_helpers - 1)
+
+        # Calculate helper’s proportional slot
+        slot = int((self.helper_index / num_helpers) * total_weights)
+        slot = min(slot, total_weights - 1)
+
+        assignment = weighted_species[slot]
+        print(f"Helper {self.id} assigned to target species {chr(assignment + ord('a'))}")
+        return {assignment}
+
+
+    def _assignment_window_active(self) -> bool:
+        """Whether helpers should restrict to their assigned species."""
+        return (
+            self.kind == Kind.Helper
+            and self.turn < self.ASSIGNMENT_TURN_LIMIT
+            and bool(self.target_species)
+        )
 
     # === Messaging & Snapshot Handling ===
 
@@ -431,6 +473,10 @@ class Player4(Player):
             if animal in self.flock:
                 continue
             if animal in self.unavailable_animals:
+                continue
+            if self._assignment_window_active() and (
+                not self.target_species or animal.species_id not in self.target_species
+            ):
                 continue
             # Skip animals from species that are already complete on the Ark
             if self._is_species_complete_on_ark(animal.species_id):
