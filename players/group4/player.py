@@ -23,7 +23,7 @@ class Player4(Player):
     and coordinates via messages."""
 
     SAFE_MANHATTAN_LIMIT = c.START_RAIN  # can get back to ark before deadline
-    ASSIGNMENT_TURN_LIMIT = 1000        # helpers restrict to assigned species early game
+    ASSIGNMENT_TURN_LIMIT = 1000  # helpers restrict to assigned species early game
 
     def __init__(
         self,
@@ -172,7 +172,9 @@ class Player4(Player):
         slot = min(slot, total_weights - 1)
 
         assignment = weighted_species[slot]
-        print(f"Helper {self.id} assigned to target species {chr(assignment + ord('a'))}")
+        print(
+            f"Helper {self.id} assigned to target species {chr(assignment + ord('a'))}"
+        )
         return {assignment}
 
     def _assignment_window_active(self) -> bool:
@@ -538,9 +540,7 @@ class Player4(Player):
             return (best_animal, best_score)
         return (None, None)
 
-    def _block_cell_temporarily(
-        self, cell: tuple[int, int], duration: int = 6
-    ) -> None:
+    def _block_cell_temporarily(self, cell: tuple[int, int], duration: int = 6) -> None:
         """Block a cell for a few turns to avoid hovering or repeated contention."""
         existing_expiry = self.blocked_cells.get(cell, self.turn)
         self.blocked_cells[cell] = max(existing_expiry, self.turn + duration)
