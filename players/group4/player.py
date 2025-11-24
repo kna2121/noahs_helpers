@@ -210,7 +210,7 @@ class Player4(Player):
 
     def _compute_target_species(
         self, species_populations: dict[str, int]
-        ) -> Optional[set[int]]:
+    ) -> Optional[set[int]]:
         """Assign helpers proportionally to rarity (not all to the rarest)."""
         if self.kind != Kind.Helper or self.helper_index is None:
             return None
@@ -234,9 +234,10 @@ class Player4(Player):
         slot = min(slot, total_weights - 1)
 
         assignment = weighted_species[slot]
-        print(f"Helper {self.id} assigned to target species {chr(assignment + ord('a'))}")
+        print(
+            f"Helper {self.id} assigned to target species {chr(assignment + ord('a'))}"
+        )
         return {assignment}
-
 
     def _assignment_window_active(self) -> bool:
         """Whether helpers should restrict to their assigned species."""
