@@ -73,7 +73,7 @@ class Player4(Player):
         population_values = sorted(
             priority[0] for priority in self.species_priority.values()
         )
-        max_pop = (max(population_values, default=0) + 100)
+        max_pop = max(population_values, default=0) + 100
         self.default_priority = (max_pop, 999)
         rare_index = (
             min(len(population_values) - 1, max(0, int(len(population_values) * 0.35)))
@@ -229,7 +229,9 @@ class Player4(Player):
         if not self.is_raining:
             return base_limit
 
-        rain_start = self.rain_start_turn if self.rain_start_turn is not None else self.turn
+        rain_start = (
+            self.rain_start_turn if self.rain_start_turn is not None else self.turn
+        )
         elapsed_since_rain = max(0.0, float(self.turn - rain_start))
         factor = max(0.0, 1.0 - (elapsed_since_rain / c.START_RAIN))
         return max(0.0, factor * base_limit)
@@ -393,7 +395,9 @@ class Player4(Player):
     def _get_next_species_to_broadcast(self) -> Optional[int]:
         """Get the next complete species to broadcast to the team."""
         complete_species = [
-            sid for sid in self.species_on_ark.keys() if self._is_species_complete_on_ark(sid)
+            sid
+            for sid in self.species_on_ark.keys()
+            if self._is_species_complete_on_ark(sid)
         ]
         if not complete_species:
             return None
@@ -406,7 +410,7 @@ class Player4(Player):
 
     def _get_next_ark_species_gender_to_broadcast(self) -> Optional[tuple[int, Gender]]:
         """Get the next species-gender pair on the Ark to broadcast (for Noah).
-        
+
         Cycles through all species and their genders present on the Ark.
         """
         # Build list of all (species_id, gender) pairs on the Ark
@@ -415,10 +419,10 @@ class Player4(Player):
             for gender in genders:
                 if gender != Gender.Unknown:
                     ark_species_genders.append((species_id, gender))
-        
+
         if not ark_species_genders:
             return None
-        
+
         # Sort for deterministic ordering
         ark_species_genders.sort(key=lambda x: (x[0], x[1].value))
         idx = self.species_broadcast_index % len(ark_species_genders)
@@ -460,7 +464,7 @@ class Player4(Player):
                     return msg if self.is_message_valid(msg) else (msg & 0xFF)
             # If no animals on Ark yet, send a status message
             return 0
-        
+
         if self.kind != Kind.Helper:
             return 0
 
@@ -502,12 +506,12 @@ class Player4(Player):
     def _process_messages(self, messages: list[Message]) -> None:
         """Decode broadcasts from neighbors and keep track of their assignments/state."""
         helpers_seen_this_turn = set()
-        
+
         for msg in messages:
             helper_id = msg.from_helper.id
             helpers_seen_this_turn.add(helper_id)
             self.helper_last_seen[helper_id] = self.turn
-            
+
             if msg.contents & 0x80:
                 # Check bit 5 (0x20) FIRST for flock-animal messages, because Female animals
                 # set both bit 5 (flock flag) and bit 6 (gender), which would match
@@ -518,7 +522,7 @@ class Player4(Player):
                     species_id = msg.contents & 0x3F  # bits 0-5
                     gender_bit = (msg.contents >> 6) & 0x01  # bit 6
                     gender = Gender.Female if gender_bit else Gender.Male
-                    
+
                     # Distinguish: Noah (id=0) broadcasts Ark genders, helpers broadcast flock animals
                     if helper_id == 0:
                         # Noah's message: update Ark species-gender knowledge
@@ -545,51 +549,58 @@ class Player4(Player):
                     self.known_assignments[helper_id] = msg.contents & 0x3F
             elif msg.contents & 0x40:
                 self.helpers_returning.add(helper_id)
-        
+
         # Clean up entries for helpers we haven't heard from in a while (out of range or released animals)
         # Remove entries if we haven't heard from helper in last 10 turns
-        # Reduced from 20 to be more responsive - with max 4 animals per flock, 
+        # Reduced from 20 to be more responsive - with max 4 animals per flock,
         # round-robin takes at most 4 turns, so 10 gives plenty of buffer
         stale_threshold = 10
         for key in list(self.animals_in_other_flocks.keys()):
             self.animals_in_other_flocks[key] = {
-                h_id for h_id in self.animals_in_other_flocks[key]
-                if self.turn - self.helper_last_seen.get(h_id, -stale_threshold) < stale_threshold
+                h_id
+                for h_id in self.animals_in_other_flocks[key]
+                if self.turn - self.helper_last_seen.get(h_id, -stale_threshold)
+                < stale_threshold
             }
             if not self.animals_in_other_flocks[key]:
                 del self.animals_in_other_flocks[key]
-        
+
         # After processing all messages, check for conflicts and implement tie-breaking
         self._resolve_flock_conflicts()
 
     def _resolve_flock_conflicts(self) -> None:
         """Implement tie-breaking: if multiple helpers have same animal, lower ID keeps it.
-        
+
         Conservative: Only release if we're very confident a lower-ID helper has it and will deliver it.
         """
         animals_to_release = []
         for animal in self.flock:
             if animal.gender == Gender.Unknown:
                 continue
-            
+
             key = (animal.species_id, animal.gender)
             other_helpers = self.animals_in_other_flocks.get(key, set())
-            
+
             if other_helpers:
                 # Very conservative: Only release if there's a helper with LOWER ID AND we've heard from them VERY recently
                 # This prevents releasing based on stale information
-                recent_threshold = 2  # Only trust information from last 2 turns (very recent)
+                recent_threshold = (
+                    2  # Only trust information from last 2 turns (very recent)
+                )
                 recent_lower_id_helpers = [
-                    h_id for h_id in other_helpers
-                    if h_id < self.id and self.turn - self.helper_last_seen.get(h_id, -recent_threshold) < recent_threshold
+                    h_id
+                    for h_id in other_helpers
+                    if h_id < self.id
+                    and self.turn - self.helper_last_seen.get(h_id, -recent_threshold)
+                    < recent_threshold
                 ]
-                
+
                 # Only release if we've heard from a lower-ID helper VERY recently (within 2 turns)
                 # This is conservative - we'd rather keep a potential duplicate than release unnecessarily
                 if recent_lower_id_helpers:
                     # A lower ID helper has it very recently, we should release
                     animals_to_release.append(animal)
-        
+
         # Release animals we shouldn't keep (but only if we're very confident)
         for animal in animals_to_release:
             if animal in self.flock:
@@ -599,26 +610,29 @@ class Player4(Player):
 
     def _is_animal_in_other_flocks(self, species_id: int, gender: Gender) -> bool:
         """Check if this animal (species_id, gender) is in another helper's flock.
-        
+
         Conservative: Only avoid if we're very confident another helper has it and will deliver it.
         """
         if gender == Gender.Unknown:
             return False
-        
+
         key = (species_id, gender)
         other_helpers = self.animals_in_other_flocks.get(key, set())
-        
+
         if not other_helpers:
             return False
-        
+
         # Very conservative: Only avoid if there's a helper with LOWER ID AND we've heard from them VERY recently
         # This ensures we only avoid when we're confident they still have it
         recent_threshold = 2  # Only trust information from last 2 turns (very recent)
         recent_lower_id_helpers = [
-            h_id for h_id in other_helpers
-            if h_id < self.id and self.turn - self.helper_last_seen.get(h_id, -recent_threshold) < recent_threshold
+            h_id
+            for h_id in other_helpers
+            if h_id < self.id
+            and self.turn - self.helper_last_seen.get(h_id, -recent_threshold)
+            < recent_threshold
         ]
-        
+
         # Only avoid if there's a very recent lower-ID helper (within 2 turns)
         # This is conservative - we'd rather pick up a duplicate than miss an animal
         return len(recent_lower_id_helpers) > 0
@@ -717,7 +731,11 @@ class Player4(Player):
         # Only penalize if the EXACT same gender is already seen (on Ark or in flock)
         # This allows picking the opposite gender to complete pairs
         seen_genders = genders_on_ark.union(flock_genders)
-        duplicate_species_penalty = 1 if (animal.gender != Gender.Unknown and animal.gender in seen_genders) else 0
+        duplicate_species_penalty = (
+            1
+            if (animal.gender != Gender.Unknown and animal.gender in seen_genders)
+            else 0
+        )
         unknown_penalty = 1 if animal.gender == Gender.Unknown else 0
         duplicates = self._flock_species_count(animal.species_id)
 
@@ -734,6 +752,7 @@ class Player4(Player):
         self, cellview: CellView, assume_unknown: bool = False
     ) -> tuple[Animal, tuple[int, int, int, int, int, int]] | tuple[None, None]:
         """Return the highest ranked animal; prefer rare early, but allow any if none rare."""
+
         def candidates() -> list[Animal]:
             picks = []
             for animal in cellview.animals:
@@ -757,11 +776,15 @@ class Player4(Player):
         if not animals:
             return (None, None)
 
-        def best_among(pool: list[Animal]) -> tuple[Animal, tuple[int, int, int, int, int, int]]:
+        def best_among(
+            pool: list[Animal],
+        ) -> tuple[Animal, tuple[int, int, int, int, int, int]]:
             chosen: Optional[Animal] = None
             chosen_score: Optional[tuple[int, int, int, int, int, int]] = None
             for animal in pool:
-                score = self._score_animal(animal, assume_unknown_desired=assume_unknown)
+                score = self._score_animal(
+                    animal, assume_unknown_desired=assume_unknown
+                )
                 if chosen is None or chosen_score is None or score < chosen_score:
                     chosen = animal
                     chosen_score = score
