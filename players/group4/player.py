@@ -47,6 +47,9 @@ class Player4(Player):
         self.is_raining = False
         self.sight = None
         self.ark_view = None
+        self.rain_start_turn: Optional[int] = None
+        self.total_time_estimate: Optional[int] = None
+        self.target_return_turn: Optional[int] = None
 
         # Helpers are numbered after Noah (id 0), so compute per-helper indices.
         self.helper_index = self.id - 1 if self.kind == Kind.Helper else None
@@ -67,18 +70,17 @@ class Player4(Player):
 
         # Pre-compute rarity ranks so greedy selection remains deterministic.
         self.species_priority = self._build_species_priority(species_populations)
-        max_pop = (
-            max((priority[0] for priority in self.species_priority.values()), default=0)
-            + 100
+        population_values = sorted(
+            priority[0] for priority in self.species_priority.values()
         )
+        max_pop = (max(population_values, default=0) + 100)
         self.default_priority = (max_pop, 999)
-        self.rare_cutoff = (
-            min(
-                (priority[0] for priority in self.species_priority.values()),
-                default=0,
-            )
-            + 1
+        rare_index = (
+            min(len(population_values) - 1, max(0, int(len(population_values) * 0.35)))
+            if population_values
+            else 0
         )
+        self.rare_cutoff = population_values[rare_index] if population_values else 0
 
         self.species_on_ark: dict[int, set[Gender]] = {}
         self.known_assignments: dict[int, int] = {}
@@ -101,6 +103,14 @@ class Player4(Player):
         self.target_species: Optional[set[int]] = self._compute_target_species(
             species_populations
         )
+        self.assignment_turn_limit = self._compute_assignment_turn_limit(
+            species_populations
+        )
+        # Remember where we were patrolling before a forced return so we can resume
+        self.resume_patrol_target: Optional[tuple[float, float]] = None
+        # Track species count and a throughput mode for sparse-helper / dense-species scenarios
+        self.species_count = len(species_populations)
+        self.throughput_mode = self._compute_throughput_mode()
 
     # === Territory & Priority Helpers ===
 
@@ -149,39 +159,62 @@ class Player4(Player):
     def _compute_target_species(
         self, species_populations: dict[str, int]
     ) -> Optional[set[int]]:
-        """Assign helpers proportionally to rarity (not all to the rarest)."""
+        """Specialize only when we have enough helpers; otherwise stay generalist."""
         if self.kind != Kind.Helper or self.helper_index is None:
             return None
         if not species_populations:
             return None
+        if self.helper_count <= 3:
+            return None
 
-        # Build weighted list of species IDs
-        max_population = max(species_populations.values(), default=0)
-        weighted_species: list[int] = []
-
-        for letter, pop in sorted(species_populations.items()):
+        species_by_rarity: list[tuple[int, int]] = []
+        for letter, pop in species_populations.items():
             sid = ord(letter) - ord("a")
-            weight = max(1, (max_population - pop) + 1)  # rarer → bigger weight
-            weighted_species.extend([sid] * weight)
+            species_by_rarity.append((sid, pop))
 
-        total_weights = len(weighted_species)
-        num_helpers = max(1, self.num_helpers - 1)
+        species_by_rarity.sort(key=lambda entry: (entry[1], entry[0]))
+        species_ids = [sid for sid, _ in species_by_rarity]
+        species_count = len(species_ids)
+        helper_density = self.helper_count / max(1, species_count)
 
-        # Calculate helper’s proportional slot
-        slot = int((self.helper_index / num_helpers) * total_weights)
-        slot = min(slot, total_weights - 1)
+        coverage = 1
+        if helper_density < 0.8:
+            coverage = min(3, species_count)
+        elif helper_density < 1.5:
+            coverage = min(2, species_count)
 
-        assignment = weighted_species[slot]
-        print(
-            f"Helper {self.id} assigned to target species {chr(assignment + ord('a'))}"
-        )
-        return {assignment}
+        start = self.helper_index % species_count if species_count else 0
+        assignments = {
+            species_ids[(start + offset) % species_count] for offset in range(coverage)
+        }
+        assigned_names = ",".join(chr(sid + ord("a")) for sid in sorted(assignments))
+        print(f"Helper {self.id} assigned to target species {assigned_names}")
+        return assignments
+
+    def _compute_assignment_turn_limit(
+        self, species_populations: dict[str, int]
+    ) -> int:
+        """Dynamic specialization window based on helper-to-species ratio."""
+        species_count = max(1, len(species_populations))
+        helper_density = self.helper_count / species_count
+
+        if helper_density < 0.8:
+            return 500
+        if helper_density > 1.6:
+            return 1400
+        return 900
+
+    def _compute_throughput_mode(self) -> bool:
+        """Detect cases with few helpers and many species where frequent trips help."""
+        # Disabled: we now require full flocks before returning even in sparse-helper settings.
+        return False
 
     def _assignment_window_active(self) -> bool:
         """Whether helpers should restrict to their assigned species."""
         return (
             self.kind == Kind.Helper
-            and self.turn < self.ASSIGNMENT_TURN_LIMIT
+            and self.helper_count > 3
+            and self.turn < self.assignment_turn_limit
             and bool(self.target_species)
         )
 
@@ -191,16 +224,10 @@ class Player4(Player):
         if not self.is_raining:
             return base_limit
 
-        end_rain = getattr(c, "END_RAIN", None)
-        if isinstance(end_rain, int) and end_rain > c.START_RAIN:
-            total_rain_duration = max(1, end_rain - c.START_RAIN)
-            elapsed_since_rain = max(0, self.turn - c.START_RAIN)
-            factor = max(0.0, 1.0 - (elapsed_since_rain / total_rain_duration))
-            return max(0.0, factor * base_limit)
-
-        # Fallback: shrink by one cell per turn during rain
-        shrink = max(0.0, float(self.turn - c.START_RAIN))
-        return max(0.0, base_limit - shrink)
+        rain_start = self.rain_start_turn if self.rain_start_turn is not None else self.turn
+        elapsed_since_rain = max(0.0, float(self.turn - rain_start))
+        factor = max(0.0, 1.0 - (elapsed_since_rain / c.START_RAIN))
+        return max(0.0, factor * base_limit)
 
     def _is_point_safe(self, x: float, y: float) -> bool:
         """Check Manhattan distance constraint back to the Ark."""
@@ -208,43 +235,47 @@ class Player4(Player):
         limit = self._effective_safe_limit()
         return abs(x - ax) + abs(y - ay) <= limit
 
-    def _compute_target_species(
-        self, species_populations: dict[str, int]
-    ) -> Optional[set[int]]:
-        """Assign helpers proportionally to rarity (not all to the rarest)."""
-        if self.kind != Kind.Helper or self.helper_index is None:
-            return None
-        if not species_populations:
-            return None
+    # === Timing & Return Planning ===
 
-        # Build weighted list of species IDs
-        max_population = max(species_populations.values(), default=0)
-        weighted_species: list[int] = []
+    def _update_time_inference(self) -> None:
+        """Infer total game length once rain starts so we can aim for last-turn returns."""
+        if self.is_raining and self.rain_start_turn is None:
+            self.rain_start_turn = self.turn
+            self.total_time_estimate = self.turn + c.START_RAIN
 
-        for letter, pop in sorted(species_populations.items()):
-            sid = ord(letter) - ord("a")
-            weight = max(1, (max_population - pop) + 1)  # rarer → bigger weight
-            weighted_species.extend([sid] * weight)
+        if self.total_time_estimate is None and self.rain_start_turn is not None:
+            self.total_time_estimate = self.rain_start_turn + c.START_RAIN
 
-        total_weights = len(weighted_species)
-        num_helpers = max(1, self.num_helpers - 1)
+        if self.total_time_estimate is not None:
+            self._update_return_plan()
 
-        # Calculate helper’s proportional slot
-        slot = int((self.helper_index / num_helpers) * total_weights)
-        slot = min(slot, total_weights - 1)
+    def _turns_left_estimate(self) -> float:
+        """Aggressive estimate of remaining turns; optimistic until rain gives a bound."""
+        if self.total_time_estimate is not None:
+            return max(0.0, float(self.total_time_estimate - self.turn))
+        if self.rain_start_turn is not None:
+            return max(0.0, float(self.rain_start_turn + c.START_RAIN - self.turn))
+        return float(c.MAX_T - self.turn)
 
-        assignment = weighted_species[slot]
-        print(
-            f"Helper {self.id} assigned to target species {chr(assignment + ord('a'))}"
-        )
-        return {assignment}
+    def _steps_to_ark(self) -> int:
+        """Estimated turns needed to reach the Ark from the current position."""
+        step = max(c.MAX_DISTANCE_KM * 0.99, 0.1)
+        return max(1, math.ceil(self._distance_from_ark() / step))
 
-    def _assignment_window_active(self) -> bool:
-        """Whether helpers should restrict to their assigned species."""
-        return (
-            self.kind == Kind.Helper
-            and self.turn < self.ASSIGNMENT_TURN_LIMIT
-            and bool(self.target_species)
+    def _return_buffer(self) -> int:
+        """How many turns we reserve to get home; scales with distance and flock fullness."""
+        buffer = self._steps_to_ark() + 6
+        if self.is_flock_full():
+            buffer += 2
+        return buffer
+
+    def _update_return_plan(self) -> None:
+        """Set a target return turn aimed near the game end while leaving just enough travel time."""
+        if self.total_time_estimate is None:
+            return
+
+        self.target_return_turn = max(
+            self.turn, int(self.total_time_estimate - self._return_buffer())
         )
 
     # === Messaging & Snapshot Handling ===
@@ -257,6 +288,8 @@ class Player4(Player):
         self.flock = snapshot.flock
         self.sight = snapshot.sight
         self.ark_view = snapshot.ark_view
+
+        self._update_time_inference()
 
         if snapshot.ark_view:
             self._update_ark_species(snapshot.ark_view)
@@ -286,6 +319,8 @@ class Player4(Player):
             self.patrol_target = None
 
     def _is_first_sweep_active(self) -> bool:
+        if self.helper_count <= 3:
+            return False
         return not (self.first_sweep_done or self.first_sweep_returned)
 
     def _handle_pending_obtain(self) -> None:
@@ -545,39 +580,47 @@ class Player4(Player):
     def _best_animal_in_cell(
         self, cellview: CellView, assume_unknown: bool = False
     ) -> tuple[Animal, tuple[int, int, int, int, int, int]] | tuple[None, None]:
-        """Return the highest ranked animal in a cell along with its score tuple."""
-        best_animal: Optional[Animal] = None
-        best_score: Optional[tuple[int, int, int, int, int, int]] = None
-        for animal in cellview.animals:
-            if animal in self.flock:
-                continue
-            if animal in self.unavailable_animals:
-                continue
-            # NEW: during early window, only chase our assigned species
-            if self._assignment_window_active() and (
-                not self.target_species or animal.species_id not in self.target_species
-            ):
-                continue
-            if self._is_species_complete_on_ark(animal.species_id):
-                continue
-            if self._is_gender_on_ark(animal.species_id, animal.gender):
-                continue
-            if self._has_species_gender_in_flock(animal.species_id, animal.gender):
-                continue
-            # First sweep: globally favor rarer species (on top of assignment)
-            if self._is_first_sweep_active():
-                population, _ = self._species_priority(animal.species_id)
-                if population > self.rare_cutoff:
+        """Return the highest ranked animal; prefer rare early, but allow any if none rare."""
+        def candidates() -> list[Animal]:
+            picks = []
+            for animal in cellview.animals:
+                if animal in self.flock:
                     continue
+                if animal in self.unavailable_animals:
+                    continue
+                if self._is_species_complete_on_ark(animal.species_id):
+                    continue
+                if self._is_gender_on_ark(animal.species_id, animal.gender):
+                    continue
+                if self._has_species_gender_in_flock(animal.species_id, animal.gender):
+                    continue
+                picks.append(animal)
+            return picks
 
-            score = self._score_animal(animal, assume_unknown_desired=assume_unknown)
-            if best_animal is None or best_score is None or (score < best_score):
-                best_animal = animal
-                best_score = score
+        animals = candidates()
+        if not animals:
+            return (None, None)
 
-        if best_animal is not None and best_score is not None:
-            return (best_animal, best_score)
-        return (None, None)
+        def best_among(pool: list[Animal]) -> tuple[Animal, tuple[int, int, int, int, int, int]]:
+            chosen: Optional[Animal] = None
+            chosen_score: Optional[tuple[int, int, int, int, int, int]] = None
+            for animal in pool:
+                score = self._score_animal(animal, assume_unknown_desired=assume_unknown)
+                if chosen is None or chosen_score is None or score < chosen_score:
+                    chosen = animal
+                    chosen_score = score
+            return chosen, chosen_score  # type: ignore
+
+        if self._is_first_sweep_active():
+            rare_pool = []
+            for a in animals:
+                population, _ = self._species_priority(a.species_id)
+                if population <= self.rare_cutoff:
+                    rare_pool.append(a)
+            if rare_pool:
+                return best_among(rare_pool)
+
+        return best_among(animals)
 
     def _block_cell_temporarily(self, cell: tuple[int, int], duration: int = 6) -> None:
         """Block a cell for a few turns to avoid hovering or repeated contention."""
@@ -597,32 +640,30 @@ class Player4(Player):
         if self.kind != Kind.Helper:
             return False
 
+        # Full flock should always head home to unload/update ark state.
         if self.is_flock_full():
             return True
 
-        if self._is_first_sweep_active():
-            late_window = max(0, c.START_RAIN - 20)
-            if self.turn >= late_window:
-                return True
-            if self._distance_from_ark() >= self.SAFE_MANHATTAN_LIMIT * 0.95:
-                return True
-            return False
-
+        self._update_return_plan()
+        turns_left = self._turns_left_estimate()
         dist_to_ark = self._manhattan_distance_to_ark()
         limit = self._effective_safe_limit()
+        buffer = self._return_buffer()
+
+        if turns_left <= buffer:
+            return True
+
+        if self.target_return_turn is not None and self.turn >= self.target_return_turn:
+            return True
+
         if limit <= 0.0 and dist_to_ark > 0.0:
             return True
 
-        safety_margin = 0.85 if not self.is_raining else 0.7
-        if limit > 0.0 and dist_to_ark >= limit * safety_margin:
+        if self.is_raining and limit > 0.0 and dist_to_ark >= limit * 1.05:
             return True
 
-        unique_species = {animal.species_id for animal in self.flock}
-        if len(unique_species) >= 4:
-            return True
-
-        if self.is_flock_full() and len(unique_species) == c.MAX_FLOCK_SIZE:
-            return True
+        if self._is_first_sweep_active():
+            return False
 
         return False
 
@@ -662,6 +703,11 @@ class Player4(Player):
     def _update_tracking_cell(self) -> None:
         """Find the best visible cell to chase next, respecting blocked cells."""
         if self.sight is None:
+            return
+
+        if self.is_flock_full():
+            # Do not chase new animals when full; keep roaming/returning instead.
+            self.tracking_cell = None
             return
 
         self._purge_blocked_cells()
@@ -741,6 +787,8 @@ class Player4(Player):
         self._prune_unavailable_animals(my_cell)
 
         if self._should_return_to_ark():
+            if self.resume_patrol_target is None:
+                self.resume_patrol_target = self.patrol_target or self.position
             self.force_return = True
 
         if self.hunkered_down and self.is_in_ark():
@@ -757,7 +805,14 @@ class Player4(Player):
                     self.force_return = False
                     return Move(*self.ark_position)
                 self.force_return = False
+                if self.resume_patrol_target:
+                    self.patrol_target = self.resume_patrol_target
+                self.resume_patrol_target = None
             else:
+                # While returning, allow in-place upgrades only; no chasing.
+                upgrade_action = self._maybe_release_for_priority(my_cell)
+                if upgrade_action:
+                    return upgrade_action
                 return Move(*self.move_towards(*self.ark_position))
 
         release_action = self._maybe_release_for_priority(my_cell)
