@@ -192,7 +192,6 @@ class Player4(Player):
         assignments = {
             species_ids[(start + offset) % species_count] for offset in range(coverage)
         }
-        assigned_names = ",".join(chr(sid + ord("a")) for sid in sorted(assignments))
         # print(f"Helper {self.id} assigned to target species {assigned_names}")
         return assignments
 
@@ -727,13 +726,13 @@ class Player4(Player):
 
         if animal.gender == Gender.Unknown and assume_unknown_desired:
             pairing_bonus -= 1
-        
+
         # Bonus for picking animals within assigned species during specialization window
         assignment_bonus = 0
         if self._assignment_window_active() and self.target_species:
             if animal.species_id in self.target_species:
                 assignment_bonus -= 2  # Prefer assigned species (lower score is better)
-        
+
         pairing_bonus += assignment_bonus
 
         # Only penalize if the EXACT same gender is already seen (on Ark or in flock)
