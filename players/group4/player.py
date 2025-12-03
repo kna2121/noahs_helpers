@@ -193,7 +193,7 @@ class Player4(Player):
             species_ids[(start + offset) % species_count] for offset in range(coverage)
         }
         assigned_names = ",".join(chr(sid + ord("a")) for sid in sorted(assignments))
-        print(f"Helper {self.id} assigned to target species {assigned_names}")
+        # print(f"Helper {self.id} assigned to target species {assigned_names}")
         return assignments
 
     def _compute_assignment_turn_limit(
