@@ -102,9 +102,7 @@ class Player9(Player):
         self.max_local_collects = 2
         self.local_collects = 0
         # zigzag state for sweep movement
-        self.zigzag_phase = False
-        self.zigzag_threshold = 50.0
-        self.zigzag_amplitude = 0.8
+        # (removed zig-zag/jitter variables for smooth movement)
 
     # ---------- Core Helper Functions ----------
 
@@ -494,22 +492,7 @@ class Player9(Player):
             target_x = px + dx
             target_y = py + dy
 
-        # Zig-zag: if far from ark, add a lateral offset alternating each call
-        dist_ark = distance(px, py, self.ark_position[0], self.ark_position[1])
-        if dist_ark >= getattr(self, "zigzag_threshold", 80.0):
-            # perpendicular vector
-            pdx, pdy = -dy, dx
-            # normalize
-            plen = math.hypot(pdx, pdy)
-            if plen > 0:
-                pdx /= plen
-                pdy /= plen
-                phase = 1.0 if self.zigzag_phase else -1.0
-                amp = getattr(self, "zigzag_amplitude", 0.8)
-                target_x += pdx * amp * phase
-                target_y += pdy * amp * phase
-                # flip phase for next call
-                self.zigzag_phase = not self.zigzag_phase
+        # No lateral zig-zag: sweep moves strictly in the chosen direction
 
         if self.can_move_to(target_x, target_y):
             return target_x, target_y
@@ -795,6 +778,29 @@ class Player9(Player):
 
         # 3. Decide on an Action
 
+        # If we've recently Obtained an animal, prefer to stay on this cell
+        # and try to Obtain additional valid animals for a small number of turns
+        # This prevents small move/seek oscillations (jitters) immediately
+        # after picking up an animal.
+        if getattr(self, "stay_turns", 0) > 0:
+            try:
+                cellview = self._get_my_cell()
+                if getattr(cellview, "animals", None):
+                    animal = self._get_best_animal_on_cell(cellview)
+                    if animal:
+                        # consume one stay turn and attempt another Obtain
+                        try:
+                            self.stay_turns = max(0, self.stay_turns - 1)
+                        except Exception:
+                            self.stay_turns = 0
+                        return Obtain(animal)
+            except Exception:
+                # if anything goes wrong, stop forcing stay behavior
+                try:
+                    self.stay_turns = 0
+                except Exception:
+                    pass
+
         # Priority 1: Safety / Flood Awareness / Full Inventory
         if self.is_raining:
             # Use the simple user-specified rule:
@@ -970,7 +976,9 @@ class Player9(Player):
         if len(self.flock) == 0 and len(cellview.animals) > 0:
             animal_to_get = self._get_best_animal_on_cell(cellview)
             if animal_to_get:
-                self.stay_turns = 0
+                # After the first Obtain, allow a couple of turns to pick
+                # additional animals on the same cell without moving.
+                self.stay_turns = 2
                 return Obtain(animal_to_get)
         # Conditional multi-pick: if we carry less than capacity, allow additional picks on this cell if
         # (a) another valid animal is present on this cell, or
@@ -997,6 +1005,11 @@ class Player9(Player):
             ):
                 # mark we've done an extra local collect
                 self.local_collects += 1
+                # Allow one extra immediate stay turn to avoid move jitter
+                try:
+                    self.stay_turns = max(self.stay_turns, 1)
+                except Exception:
+                    self.stay_turns = 1
                 return Obtain(another)
 
         # Priority 4: Chase the "best" animal in sight
@@ -1088,7 +1101,7 @@ class Player9(Player):
         corridor_target = self._find_animals_in_corridor(
             lookahead=self.corridor_lookahead, corridor=self.corridor_width
         )
-        if corridor_target and not self.is_raining:
+        if corridor_target:
             tx, ty = corridor_target
             # claim this cell for a short time so others avoid it
             Player9.shared_claims[(tx, ty)] = (self.id, Player9.CLAIM_TTL)
