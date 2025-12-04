@@ -142,8 +142,7 @@ class Player6(Player):
         self._species_id_populations: dict[int, int] = {}
         for species_name, pop in species_populations.items():
             species_id = self._extract_species_id(species_name)
-            if species_id is not None:
-                self._species_id_populations[species_id] = pop
+            self._species_id_populations[species_id] = pop
 
         # Deterministically map the 64 rarest species to IDs 0-63
         sorted_species = sorted(
@@ -190,6 +189,8 @@ class Player6(Player):
             self._banned_targets: dict[tuple[int, int, int], int] = {}
             self._chase_attempts_by_key: dict[tuple[int, int, int], int] = {}
             self._covered_y_intervals: list[tuple[int, int]] = []
+            # Hysteresis flag: once we commit to returning, keep returning until at ark
+            self._committed_to_return: bool = False
 
     def _update_animals_seen_in_flocks(
         self, snapshot: HelperSurroundingsSnapshot
@@ -220,19 +221,14 @@ class Player6(Player):
         _, (col, row) = self._encode_cluster(tx, ty)
         return (animal.species_id, col, row)
 
-    def _extract_species_id(self, species_name) -> int | None:
-        """Extract species_id from species name."""
-        if isinstance(species_name, int):
-            return species_name
-        elif len(species_name) == 1 and species_name.isalpha():
-            return ord(species_name.lower()) - ord("a")
-        elif "_" in species_name:
-            return int(species_name.split("_")[-1])
-        else:
-            try:
-                return int(species_name)
-            except ValueError:
-                return None
+    def _extract_species_id(self, species_name: str) -> int:
+        """Extract species_id from species name.
+
+        Species names are single lowercase letters ('a', 'b', 'c', ...).
+        Species IDs are integers (0, 1, 2, ...).
+        """
+        # species_name is a single character like 'a', 'b', etc.
+        return ord(species_name) - ord("a")
 
     def _encode_cluster(self, x: float, y: float) -> tuple[int, tuple[int, int]]:
         """Quantize (x, y) position into a 7-bit cluster id (16x8 grid)."""
@@ -584,7 +580,16 @@ class Player6(Player):
         self._process_messages(messages)
         self._current_claim = None
 
+        # Check if we've reached the ark - reset committed flag
+        if self._at_ark():
+            self._committed_to_return = False
+
         if self._should_return_to_ark():
+            self._committed_to_return = True
+            return self._return_to_ark()
+
+        # Hysteresis: once committed to return, keep returning until at ark
+        if self._committed_to_return:
             return self._return_to_ark()
 
         obtain_action = self._try_obtain_at_current_position()
@@ -595,14 +600,14 @@ class Player6(Player):
         if exploration_budget > 0:
             chase_action = self._try_chase_nearby_animal()
             if chase_action:
-                # Make sure chasing won't take us too far
-                # (this is a rough check - could be more sophisticated)
                 return chase_action
 
         # Continue patrol if we have exploration budget
         if exploration_budget > 5:  # Need at least 5 turns buffer for patrol
             return self._patrol_for_animals()
 
+        # Budget too low - commit to returning
+        self._committed_to_return = True
         return self._return_to_ark()
 
     def _process_messages(self, messages) -> None:
@@ -706,7 +711,6 @@ class Player6(Player):
 
     def _return_to_ark(self) -> Move:
         """Return to ark."""
-        # logger.debug(f"[Helper {self.id}] Returning to ark")
         return Move(*self.move_towards(*self.ark_position))
 
     # ========================================================================
@@ -933,13 +937,13 @@ class Player6(Player):
             )
 
             if target_distance >= MAX_SAFE_DISTANCE - SAFETY_MARGIN:
-                logger.debug(
-                    f"[Helper {self.id}] Patrol target too far ({target_distance:.1f}), returning"
-                )
+                # Patrol target is unreachable - commit to returning to ark
+                # This prevents wiggling between patrol and return
+                self._committed_to_return = True
                 return Move(*self.move_towards(*self.ark_position))
 
             return Move(*self.move_towards(*target))
-        logger.debug(f"Helper {self.id} FUCK getting random move")
+        logger.warning(f"Helper {self.id} getting random move - no patrol target")
         return Move(*self._get_random_move())
 
     def _get_patrol_target(self) -> tuple[float, float] | None:
