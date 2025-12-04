@@ -50,41 +50,6 @@ class Player2(Player):
         self.visited_cells = set()
         self.current_target_cell = None
 
-        # Setup for helpers to broadcast their target cell
-        # helper_id -> (grid_x, grid_y)
-        self.claimed_cells_by_helpers = {}
-        self.my_grid = (0, 0)
-
-        # Memory of very "productive"/rewarding areas
-        self.productive_areas = []  # (x, y, turn_found)
-        self.current_turn = 0
-
-    def _record_animal_position(self, x: float, y: float):
-        """Remember where we found animals"""
-        self.productive_areas.append((x, y, self.current_turn))
-        # Keep onlylast 100 turns for now
-        self.productive_areas = [
-            (px, py, t)
-            for px, py, t in self.productive_areas
-            if self.current_turn - t < 100
-        ]
-
-    def _get_nearest_productive_area(self) -> tuple[float, float] | None:
-        """Find closest area where we previously found animals"""
-        if not self.productive_areas:
-            return None
-
-        closest_dist = float("inf")
-        closest_pos = None
-
-        for px, py, turn in self.productive_areas:
-            dist = distance(*self.position, px, py)
-            if dist < closest_dist and dist > 50:  # Not too close
-                closest_dist = dist
-                closest_pos = (px, py)
-
-        return closest_pos
-
     def _get_my_cell(self) -> CellView:
         xcell, ycell = tuple(map(int, self.position))
         if not self.sight.cell_is_in_sight(xcell, ycell):
@@ -93,50 +58,36 @@ class Player2(Player):
         return self.sight.get_cellview_at(xcell, ycell)
 
     def _get_next_grid_target(self) -> tuple[float, float]:
-        """Pick the next unclaimed grid cell by another helper to explore"""
+        """Pick the next unvisited grid cell to explore"""
+        # Try to find an unvisited cell
+        # NOTE: can tune later this was arbitrarily picked for now
+        attempts = 0
+        max_attempts = 100
 
-        claimed = set(self.claimed_cells_by_helpers.values())
-
-        # Tune later: try up to 200 attempts to find an unused cell
-        for _ in range(200):
+        while attempts < max_attempts:
             grid_x = randint(0, 9)
             grid_y = randint(0, 9)
 
-            # Avoid cells visited or claimed or already target
-            if (grid_x, grid_y) in claimed:
-                continue
-            if (grid_x, grid_y) == self.current_target_cell:
-                continue
-            if (grid_x, grid_y) in self.visited_cells:
+            # Avoid visited cells + same cell we are already moving toward
+            if (grid_x, grid_y) in self.visited_cells or (
+                grid_x,
+                grid_y,
+            ) == self.current_target_cell:
+                attempts += 1
                 continue
 
+            # Valid new target
             self.visited_cells.add((grid_x, grid_y))
             self.current_target_cell = (grid_x, grid_y)
-            result = self._get_grid_center(grid_x, grid_y)
-            if (
-                distance(
-                    result[0], result[1], self.ark_position[0], self.ark_position[1]
-                )
-                > 999
-            ):
-                continue
-            return result
+            return self._get_grid_center(grid_x, grid_y)
 
-        # If grid is fully used fallback randomly
-        while True:
-            grid_x = randint(0, 9)
-            grid_y = randint(0, 9)
-            self.visited_cells.add((grid_x, grid_y))
-            self.current_target_cell = (grid_x, grid_y)
-            result = self._get_grid_center(grid_x, grid_y)
-            if (
-                distance(
-                    result[0], result[1], self.ark_position[0], self.ark_position[1]
-                )
-                > 999
-            ):
-                continue
-            return result
+        # If most cells are visited then it's fine and we'll reset to allow revists
+        self.visited_cells.clear()
+        grid_x = randint(0, 9)
+        grid_y = randint(0, 9)
+        self.visited_cells.add((grid_x, grid_y))
+        self.current_target_cell = (grid_x, grid_y)
+        return self._get_grid_center(grid_x, grid_y)
 
     def _get_grid_cell(self, x: float, y: float) -> tuple[int, int]:
         """Convert a position to the scaled down 10x10 grid cell coordinates"""
@@ -190,17 +141,17 @@ class Player2(Player):
             if orientation < 0.5:
                 xrandom = random.random()
                 if xrandom < 0.5:
-                    dx = xrandom**2
+                    dx = xrandom**3
                 else:
-                    dx = 1 - (1 - xrandom) ** 2
+                    dx = 1 - (1 - xrandom) ** 3
                 dx = int(999 * dx)
                 dy = int(999 * random.random())
             else:
                 yrandom = random.random()
                 if yrandom < 0.5:
-                    dy = yrandom**2
+                    dy = yrandom**3
                 else:
-                    dy = 1 - (1 - yrandom) ** 2
+                    dy = 1 - (1 - yrandom) ** 3
                 dy = int(999 * dy)
                 dx = int(999 * random.random())
             if distance(dx, dy, self.ark_position[0], self.ark_position[1]) < 1000:
@@ -217,8 +168,6 @@ class Player2(Player):
 
         self.sight = snapshot.sight
         self.is_raining = snapshot.is_raining
-
-        self.current_turn += 1
 
         # Mark current grid cell(the scaled down 10x10 one that hosts 10 cells) as visited when exploring
         if self.is_flock_empty():
@@ -256,13 +205,20 @@ class Player2(Player):
 
         # print(self.flock_id)
 
-        # Broadcast my current grid cell ---
-        gx, gy = self._get_grid_cell(*self.position)
-        self.my_grid = (gx, gy)
-        msg = self._encode_grid_cell(gx, gy)
+        # if I didn't receive any messages, broadcast "hello"
+        # a "hello" message is when a player's id bit is set
+        if len(self.hellos_received) == 0:
+            msg = 1 << (self.id % 8)
+        else:
+            # else, acknowledge all "hello"'s I got last turn
+            # do this with a bitwise OR of all IDs I got
+            msg = 0
+            for hello in self.hellos_received:
+                msg |= hello
+            self.hellos_received = []
 
         if not self.is_message_valid(msg):
-            msg &= 0xFF
+            msg = msg & 0xFF
 
         return msg
 
@@ -287,123 +243,12 @@ class Player2(Player):
                 return False
         return True
 
-    def _score_animal(self, animal, current_dist: float) -> float:
-        """Score the animal based off of rarity, ark completeness, pair completion, and distance to ark"""
-        score = 100.0  # Base score
-        n_i = self.species_populations.get(animal.species_id, 1000)
-
-        # Rarity bonus
-        score += 10000.0 / n_i
-
-        # Ark completeness bonus
-        if animal.species_id not in self.complete_species:
-            score += 50.0
-
-        # Flock complementarity bonus
-        needed_gender = Gender.Female if animal.gender == Gender.Male else Gender.Male
-        needed_gender_int = 1 if needed_gender == Gender.Female else 0
-        # Big reward if this completes a pair
-        if (animal.species_id, needed_gender_int) in self.flock_id:
-            score += 500.0
-
-        # Distance penalty
-        final_score = score / max(1.0, current_dist)
-
-        return final_score
-
-    def _release_for_better(self, new_animal) -> bool:
-        """Determine whether to release current flock animal for a higher-value one."""
-        if len(self.flock) < 4:
-            return False
-
-        scores = [
-            self._score_animal(
-                a, distance(*self.position, self.position[0], self.position[1])
-            )
-            for a in self.flock
-        ]
-        new_score = self._score_animal(new_animal, 1.0)
-
-        return new_score > min(scores) * 1.5  # replace weakest animal
-
-    def _want_species(self, animal) -> bool:
-        """Explicitly evaluate all conditions if chasing current species is still worth it"""
-        sid = animal.species_id
-        # Stop if we already ahve the pair
-        if sid in self.complete_species:
-            return False
-
-        male = (sid, 0)
-        female = (sid, 1)
-        ark = self.internal_ark
-
-        # If we don't have either gender chase for species
-        if male not in ark and female not in ark:
-            return True
-
-        # If ark only has the opposite gender of the animal then go get
-        if male in ark and female not in ark and animal.gender == Gender.Female:
-            return True
-        if female in ark and male not in ark and animal.gender == Gender.Male:
-            return True
-
-        return False
-
-    def _find_best_scoring_animal(self):
-        """Return (x,y) of the best-scoring animal in sight."""
-        best_score = -1.0
-        best_position = None
-
-        for cell in self.sight:
-            if len(cell.animals) == 0:
-                continue
-
-            # Skip animals being handled by another helper
-            if len(cell.helpers) > 0:
-                continue
-
-            cx, cy = cell.x, cell.y
-
-            for animal in cell.animals:
-                # Skip animals already in ark or already completed
-                if self.animal_to_tuple(animal) in self.internal_ark:
-                    continue
-                if animal.species_id in self.complete_species:
-                    continue
-
-                # Explicitly check all conditions if should still chase animal
-                # if not self._want_species(animal):
-                #    continue
-
-                # Check if should release current and chase better animal
-                if len(self.flock) == 4 and self._release_for_better(animal):
-                    return (cx, cy)
-
-                dist = distance(self.position[0], self.position[1], cx, cy)
-                score = self._score_animal(animal, dist)
-
-                if score > best_score:
-                    best_score = score
-                    best_position = (cx, cy)
-
-        return best_position
-
-    def _encode_grid_cell(self, gx, gy):
-        """Encode a 10x10 grid cell into a single byte."""
-        # Store grid x in upper 4 bits, grid y in lower 4
-        return (gx << 4) | gy
-
-    def _decode_grid_cell(self, byte):
-        """Decode the helper's broadcast message."""
-        # gx was originally shifted left by 4 so reverse
-        gx = (byte >> 4) & 0x0F
-        gy = byte & 0x0F
-        return gx, gy
-
     def get_action(self, messages: list[Message]) -> Action | None:
+        # print(self.mode)
+        # print(self.internal_ark)
         for msg in messages:
-            gx, gy = self._decode_grid_cell(msg.contents)
-            self.claimed_cells_by_helpers[msg.from_helper.id] = (gx, gy)
+            if 1 << (msg.from_helper.id % 8) == msg.contents:
+                self.hellos_received.append(msg.contents)
 
         # noah shouldn't do anything
         if self.kind == Kind.Noah:
@@ -428,7 +273,6 @@ class Player2(Player):
                 <= 20
             ):
                 self.mode = "get_back"
-                return Move(*self.move_towards(*self.ark_position))
 
         if self.is_raining and not self.rain:
             self.rain = True
@@ -466,8 +310,6 @@ class Player2(Player):
                     and animal.species_id not in self.complete_species
                     and self.animal_to_tuple(animal) not in self.flock_id
                 ):
-                    # Recrod where we obtained this animal for later use
-                    self._record_animal_position(cellview.x, cellview.y)
                     return Obtain(animal)
             # direction = self._get_random_location()
             self.mode = "move_away"
@@ -478,76 +320,37 @@ class Player2(Player):
         # print("else")
         """If I see any animals that might not be in the arc, I'll chase the 
         closest one"""
-        # closest_animal = self._find_closest_animal()
-        # if closest_animal:
-        # This means the random_player will even approach
-        # animals in other helpers' flocks
-        #    return Move(*self.move_towards(*closest_animal))
-        best_animal_pos = self._find_best_scoring_animal()
-        if best_animal_pos is not None:
-            return Move(*self.move_towards(*best_animal_pos))
-
-        # NOTE TUNE THIS: chance to revisit productive areas instead of random exploration
-        if randint(1, 100) <= 10:
-            productive = self._get_nearest_productive_area()
-            if productive:
-                return Move(*self.move_towards(*productive))
+        closest_animal = self._find_closest_animal()
+        if closest_animal:
+            # This means the random_player will even approach
+            # animals in other helpers' flocks
+            return Move(*self.move_towards(*closest_animal))
 
         # Systematic grid exploration
-        """Starting from here is the code using self._get_random_location, 
-        the one that takes random values and prioretizes edges. """
         if self.mode == "waiting":
             # Pick a new grid cell to explore
-            direction = self._get_random_location()
+            direction = self._get_next_grid_target()
             self.mode = "moving"
             self.direction = direction
             return Move(*self.move_towards(*self.direction))
         else:
             # Check if we've reached our target grid cell
-            if self.position == self.direction:
-                # Reached target, pick new cell
-                direction = self._get_random_location()
-                self.mode = "moving"
-                self.direction = direction
-                return Move(*self.move_towards(*self.direction))
+            if self.current_target_cell:
+                current_grid = self._get_grid_cell(*self.position)
+                if current_grid == self.current_target_cell:
+                    # Reached target, pick new cell
+                    direction = self._get_next_grid_target()
+                    self.mode = "moving"
+                    self.direction = direction
+                    return Move(*self.move_towards(*self.direction))
 
             # Check if close to direction target
             if distance(*self.position, *self.direction) < 10:
                 # Pick new grid cell
-                direction = self._get_random_location()
+                direction = self._get_next_grid_target()
                 self.mode = "moving"
                 self.direction = direction
                 return Move(*self.move_towards(*self.direction))
             else:
                 # Keep moving toward current target
                 return Move(*self.move_towards(*self.direction))
-
-        """Starting from here is the code using self._get_next_grid_target, 
-        It's slightly different from self._get_random_location."""
-        # if self.mode == "waiting":
-        #     # Pick a new grid cell to explore
-        #     direction = self._get_next_grid_target()
-        #     self.mode = "moving"
-        #     self.direction = direction
-        #     return Move(*self.move_towards(*self.direction))
-        # else:
-        #     # Check if we've reached our target grid cell
-        #     if self.current_target_cell:
-        #         current_grid = self._get_grid_cell(*self.position)
-        #         if current_grid == self.current_target_cell:
-        #             # Reached target, pick new cell
-        #             direction = self._get_next_grid_target()
-        #             self.mode = "moving"
-        #             self.direction = direction
-        #             return Move(*self.move_towards(*self.direction))
-
-        #     # Check if close to direction target
-        #     if distance(*self.position, *self.direction) < 10:
-        #         # Pick new grid cell
-        #         direction = self._get_next_grid_target()
-        #         self.mode = "moving"
-        #         self.direction = direction
-        #         return Move(*self.move_towards(*self.direction))
-        #     else:
-        #         # Keep moving toward current target
-        #         return Move(*self.move_towards(*self.direction))
